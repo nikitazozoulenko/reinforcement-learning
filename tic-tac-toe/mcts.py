@@ -42,16 +42,18 @@ class MCTS:
         self.t = 0
 
 
-    def monte_carlo_tree_search(self, max_steps=1000):
+    def monte_carlo_tree_search(self, max_steps=1000, choose_eps=0):
         while self.t<1:
-            leaf = self.root.uct_traverse()
-            leaf.backpropagate()
+            self.root.uct_traverse()
             self.t +=1
-        return self.best_path()
+
+        a = self.best_action(choose_eps)
+        return a
 
 
-    def best_path(self):
-        pass
+    def best_action(self, eps):
+        return self.root.best_action(choose_eps)
+        
 
 
 class Node:
@@ -68,40 +70,48 @@ class Node:
         self.n_visited = 1
     
 
-    def uct_traverse(self, eps=0.5):
+    def uct_traverse(self, eps=0.1):
         '''Recursively returns new simulated node picked with eps-greedy UCT'''
-        #check if terminate
+        #check if terminate and enumerate
+        self.n_visited += 1
         if self.is_terminate_state:
             return self
 
+        #Get best legal action
+        a = self.best_action(eps)
+
+        #recursively returns the new simulated node.
+        if self.children[a] == None:
+            return self.simulate(a)
+        else:
+            return self.children[a].uct_traverse()
+
+        #the program should never get to this line
+        raise RuntimeError("NO ACTIONS WERE LEGAL")
+
+
+    def best_action(self, eps):
+        '''Returns the best action to pick. Also checks that the move is legal'''
         #Get statistics for UCT formula
-        self.n_visited += 1
         children_n_visited = np.ones((self.Q.size(-1)))
         for i, child in enumerate(self.children):
             if child != None:
                 children_n_visited[i] = child.n_visited
         U = np.sqrt(2*np.log(self.n_visited)/children_n_visited).astype(np.float32)
-
-        #recursively returns the new stimulated node. TODO a sorted list of best actions to take
         _, sorted_actions = eps_greedy(self.tree_Q + torch.from_numpy(U).to(device), eps)
         for a in sorted_actions:
             if self.s.check_if_legal_move(a):
-                if self.children[a] == None:
-                    return self.simulate(a)
-                else:
-                    return self.children[a].uct_traverse()
-
-        #the program should never get to this line
-        raise RuntimeError("NO ACTIONS WERE LEGAL")
+                return a
 
     
     def simulate(self, a):
         s_prime, r, terminate = step(self.s, a)
-        self.children[action] = Node(s=s_prime.reverse_player_positions(), parent=self, depth=self.depth+1)
+        self.children[a] = Node(s=s_prime.reverse_player_positions(), parent=self, depth=self.depth+1)
         if termiante:
             estimated_return = r
         else:
-            estimated_return = r+torch.max(self.children[action].Q)
+            estimated_return = r+torch.max(self.children[a].tree_Q)
+        assert True == False
         self.children[action].backpropagate(estimated_return)
         
 
