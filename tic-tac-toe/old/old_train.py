@@ -6,10 +6,9 @@ import torch
 import torch.nn.functional as F
 import torch.optim as optim
 
-from network import FCC
-from environment import GameBoard, step
+from network import FCC2x2
+from cube2x2 import Cube
 from graphing import graph, values2ewma
-from mcts import MCTS, eps_greedy, board_to_tensor
 
 device = torch.device("cuda")
 
@@ -34,7 +33,7 @@ class ReplayMemory():
         return samples
 
 
-def board_to_tensor(s):
+def cube_to_tensor(s):
     tensor = torch.from_numpy(s.cube_array)
     return tensor.to(device).view(1, -1)
     #return tensor.to(device).view(1, 6*6, 3, 3)

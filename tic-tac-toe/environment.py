@@ -2,6 +2,16 @@ import copy
 import numpy as np
 
 
+def step(s, a):
+    s_prime = s.copy().take_action(a)
+    terminate = s_prime.check_win_position()
+    if terminate:
+        r = 1
+    else:
+        r = 0
+    return s_prime, r, terminate
+
+
 class GameBoard:
     def __init__(self, size=5, win_length=3):
         self.size = size
@@ -15,7 +25,7 @@ class GameBoard:
         return self
 
     
-    def check_if_action_allowed(self, a):
+    def check_if_legal_action(self, a):
         if self.board[a//self.size, a%self.size] == 0:
             return True
         return False
@@ -135,23 +145,3 @@ if __name__ == "__main__":
     print(env)
     win_coords = env.check_win_position()
     print(win_coords)
-
-
-
-
-    print("allowed", env.check_if_action_allowed(0))
-    env.take_action(0)
-    print("win", env.check_win_position())
-    print(env)
-
-    print("allowed", env.check_if_action_allowed(1))
-    env.take_action(1)
-    print("win", env.check_win_position())
-    print(env)
-
-    env.reverse_player_positions()
-
-    print("allowed", env.check_if_action_allowed(2))
-    env.take_action(2)
-    print("win", env.check_win_position())
-    print(env)
