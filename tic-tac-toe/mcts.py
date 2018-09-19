@@ -24,9 +24,9 @@ def eps_greedy(action_values, eps):
 
 
 class MCTS:
-    def __init__(self, root_state, network):
+    def __init__(self, board_size, win_length, network): 
         self.network = network
-        self.root = Node(network=self.network, s=root_state, parent=None, prev_a=None, depth=0, is_terminate_state=False)
+        self.root = Node(network=self.network, s=GameBoard(board_size, win_length), parent=None, prev_a=None, depth=0, is_terminate_state=False)
         self.t = 0
 
 
@@ -34,14 +34,17 @@ class MCTS:
         while self.t<max_steps:
             self.root.uct_traverse(mcts_eps)
             self.t +=1
-        
-        tree_Q = self.root.tree_Q
         a = self.get_best_action(final_choose_eps)
-        self.change_root_with_action(a)
-        return tree_Q, a
+        return a
+
+    
+    def get_experience_replay_item(self):
+        return self.root.tree_Q, self.root.s
 
     
     def change_root_with_action(self, a):
+        if self.root.children[a] == None:
+            self.root.simulate(a)
         self.root = self.root.children[a]
 
 
@@ -106,7 +109,7 @@ class Node:
         if terminate:
             estimated_return = torch.tensor(r).float().to(device)
         else:
-            estimated_return = r+torch.max(self.children[a].tree_Q.data)
+            estimated_return = r+torch.min(self.children[a].tree_Q.data)
         self.children[a].backpropagate(estimated_return)
         
 

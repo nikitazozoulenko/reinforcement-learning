@@ -4,7 +4,7 @@ import numpy as np
 
 def step(s, a):
     s_prime = s.copy().take_action(a)
-    terminate = s_prime.check_win_position()
+    terminate, _ = s_prime.check_win_position()
     if terminate:
         r = 1
     else:
@@ -48,27 +48,32 @@ class GameBoard:
     
     def check_win_position(self):
         '''Finds the positions of the win (player_val=1). 
-           Returns empty list if no win, else list (y,x) coords of positions.'''
+           Returns tuple (terminate, coord_list), empty list if no win, else list (y,x) coords of positions.'''
         n_cols = np.zeros((self.size)) # |
         n_rows = np.zeros((self.size)) # --
         n_diag = np.zeros((2*self.size-1)) # \
         n_anti_diag = np.zeros((2*self.size-1)) # /
+        non_zeros = 0
 
         #enumerate the amount of Xs
         for y, rows in enumerate(self.board):
             for x, value in enumerate(rows):
+                if value != 0:
+                    non_zeros += 1
                 if value == 1:
                     n_cols[x] += 1
                     n_rows[y] += 1
                     n_diag[self.size-1-y+x] += 1
                     n_anti_diag[x+y] += 1
+        if non_zeros == self.size**2-1:
+            return True, []
         
         #find coords for lists with enough Xs
         for (v,  kind) in [(n_cols, "cols"), (n_rows, "rows"), (n_diag, "diag"), (n_anti_diag, "anti_diag")]:
             for i, val in enumerate(v):
                 if val >= self.win_length:
                     return self._find_coords(kind, i)
-        return []
+        return False, []
 
         
     def _find_coords(self, kind, index):
@@ -82,35 +87,35 @@ class GameBoard:
                     count += 1
                     coords += [(index, i)]
                     if count == self.win_length:
-                        return coords
+                        return True, coords
                 else:
                     count = 0
                     coords = []
         
-        if kind == "rows":
+        elif kind == "rows":
             for i, val in enumerate(self.board[index, :]):
                 if val == 1:
                     count += 1
                     coords += [(i, index)]
                     if count == self.win_length:
-                        return coords
+                        return True, coords
                 else:
                     count = 0
                     coords = []
         
-        if kind == "diag":
+        elif kind == "diag":
             for i in range(self.size-abs(index-self.size+1)):
                 if self.board[i, i] == 1:
                     count += 1
                     coords += [(i, i)]
 
                     if count == self.win_length:
-                        return coords
+                        return True, coords
                 else:
                     count = 0
                     coords = []
 
-        if kind == "anti_diag":
+        elif kind == "anti_diag":
             for i in range(self.size-abs(index-self.size+1)):
                 if index <= self.size-1:
                     coord = (i, self.size-1-abs(index-self.size+1)-i)
@@ -120,7 +125,7 @@ class GameBoard:
                     count += 1
                     coords += [coord]
                     if count == self.win_length:
-                        return coords
+                        return True, coords
                 else:
                     count = 0
                     coords = []
