@@ -4,9 +4,12 @@ import numpy as np
 
 def step(s, a):
     s_prime = s.copy().take_action(a)
-    terminate, _ = s_prime.check_win_position()
+    terminate, coords = s_prime.check_win_position()
     if terminate:
-        r = 1
+        if coords:
+            r = float(s_prime.board[coords[0]]) # 1 cross, -1 circle
+        else:
+            r = 0
     else:
         r = 0
     return s_prime, r, terminate
@@ -17,11 +20,17 @@ class GameBoard:
         self.size = size
         self.win_length = win_length
         self.board = np.zeros(((size, size)), dtype=np.float32)
+        self.turn_value_dict = {"X":1, "O":-1}
+        self.turn = "X"
 
                 
     def take_action(self, a):
         '''Takes action index number a'''
-        self.board[a//self.size, a%self.size] = 1
+        self.board[a//self.size, a%self.size] = self.turn_value_dict[self.turn]
+        if self.turn == "X":
+            self.turn = "O"
+        else:
+            self.turn = "X"
         return self
 
     
@@ -33,6 +42,10 @@ class GameBoard:
     
     def reverse_player_positions(self):
         self.board *= -1
+        if self.turn == "X":
+            self.turn = "O"
+        else:
+            self.turn = "X"
         return self
 
     
@@ -43,11 +56,21 @@ class GameBoard:
     def restart(self):
         '''Resets board to all zeros'''
         self.board = np.zeros(((self.size, self.size)))
+        self.turn = "X"
         return self
 
-    
+
     def check_win_position(self):
-        '''Finds the positions of the win (player_val=1). 
+        '''Checks if any player has won and returns list [True/False, coords]'''
+        terminate, coords = self._check_win_for_white(self.board)
+        if terminate:
+            return terminate, coords
+        terminate, coords = self._check_win_for_white(-1 * self.board)
+        return terminate, coords
+
+
+    def _check_win_for_white(self, board):
+        '''Finds the positions of the win for "X" (player_val=1). 
            Returns tuple (terminate, coord_list), empty list if no win, else list (y,x) coords of positions.'''
         n_cols = np.zeros((self.size)) # |
         n_rows = np.zeros((self.size)) # --
@@ -56,7 +79,7 @@ class GameBoard:
         non_zeros = 0
 
         #enumerate the amount of Xs
-        for y, rows in enumerate(self.board):
+        for y, rows in enumerate(board):
             for x, value in enumerate(rows):
                 if value != 0:
                     non_zeros += 1
@@ -65,52 +88,57 @@ class GameBoard:
                     n_rows[y] += 1
                     n_diag[self.size-1-y+x] += 1
                     n_anti_diag[x+y] += 1
-        if non_zeros == self.size**2-1:
-            return True, []
         
         #find coords for lists with enough Xs
         for (v,  kind) in [(n_cols, "cols"), (n_rows, "rows"), (n_diag, "diag"), (n_anti_diag, "anti_diag")]:
             for i, val in enumerate(v):
                 if val >= self.win_length:
-                    return self._find_coords(kind, i)
+                    coords = self._find_coords(kind, i, board)
+                    if coords:
+                        return True, coords
+
+        #look for draw
+        if non_zeros == self.size**2:
+            return True, []
+
         return False, []
 
         
-    def _find_coords(self, kind, index):
+    def _find_coords(self, kind, index, board):
         '''Returns a list of (y, x) coordinates of a vector where there exists a win'''
         coords = []
         count = 0
 
         if kind == "cols":
-            for i, val in enumerate(self.board[:, index]):
+            for i, val in enumerate(board[:, index]):
                 if val == 1:
                     count += 1
-                    coords += [(index, i)]
+                    coords += [(i, index)]
                     if count == self.win_length:
-                        return True, coords
+                        return coords
                 else:
                     count = 0
                     coords = []
         
         elif kind == "rows":
-            for i, val in enumerate(self.board[index, :]):
+            for i, val in enumerate(board[index, :]):
                 if val == 1:
                     count += 1
-                    coords += [(i, index)]
+                    coords += [(index, i)]
                     if count == self.win_length:
-                        return True, coords
+                        return coords
                 else:
                     count = 0
                     coords = []
         
         elif kind == "diag":
             for i in range(self.size-abs(index-self.size+1)):
-                if self.board[i, i] == 1:
+                if board[i, i] == 1:
                     count += 1
                     coords += [(i, i)]
 
                     if count == self.win_length:
-                        return True, coords
+                        return coords
                 else:
                     count = 0
                     coords = []
@@ -121,14 +149,15 @@ class GameBoard:
                     coord = (i, self.size-1-abs(index-self.size+1)-i)
                 else: #if index > self.size-1
                     coord = (i+abs(index-self.size+1), self.size-1-i)
-                if self.board[coord] == 1:
+                if board[coord] == 1:
                     count += 1
                     coords += [coord]
                     if count == self.win_length:
-                        return True, coords
+                        return coords
                 else:
                     count = 0
                     coords = []
+        return []
 
         
     def __str__(self):

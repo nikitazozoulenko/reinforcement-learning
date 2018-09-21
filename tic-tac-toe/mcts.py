@@ -27,13 +27,13 @@ class MCTS:
     def __init__(self, board_size, win_length, network): 
         self.network = network
         self.root = Node(network=self.network, s=GameBoard(board_size, win_length), parent=None, prev_a=None, depth=0, is_terminate_state=False)
-        self.t = 0
 
 
     def monte_carlo_tree_search(self, max_steps=100, mcts_eps=0.1, final_choose_eps=0.1):
-        while self.t<max_steps:
+        t=0
+        while t<max_steps:
             self.root.uct_traverse(mcts_eps)
-            self.t +=1
+            t += 1
         a = self.get_best_action(final_choose_eps)
         return a
 
@@ -53,7 +53,6 @@ class MCTS:
         return a
         
 
-
 class Node:
     def __init__(self, network, s, parent, prev_a, depth, is_terminate_state):
         self.network = network
@@ -67,6 +66,9 @@ class Node:
         self.children = [None] * self.tree_Q.size(-1)
 
         self.n_visited = 1
+
+        if depth == 0:
+            self.player_modulo = 1 # TODO TODO TODO
     
 
     def uct_traverse(self, eps=0.1):
@@ -93,8 +95,9 @@ class Node:
         for i, child in enumerate(self.children):
             if child != None:
                 children_n_visited[i] = child.n_visited
-        U = np.sqrt(2*np.log(self.n_visited)/children_n_visited).astype(np.float32)
-        sorted_actions = eps_greedy(self.tree_Q + torch.from_numpy(U).to(device), eps)
+        #U = np.sqrt(2*np.log(self.n_visited)/children_n_visited).astype(np.float32)
+        #sorted_actions = eps_greedy(self.tree_Q + torch.from_numpy(U).to(device), eps)
+        sorted_actions = eps_greedy(self.tree_Q, eps)
         for a in sorted_actions:
             if self.s.check_if_legal_action(a):
                 return a
@@ -109,18 +112,20 @@ class Node:
         if terminate:
             estimated_return = torch.tensor(r).float().to(device)
         else:
-            estimated_return = r+torch.min(self.children[a].tree_Q.data)
-        self.children[a].backpropagate(estimated_return)
+            estimated_return = r-torch.max(self.children[a].tree_Q.data)
+        self.tree_Q[a] = estimated_return
+        self.backpropagate()
         
 
-    def backpropagate(self, estimated_return):
+    def backpropagate(self):
         if self.parent != None:
             old_q_value = self.parent.tree_Q[self.prev_a]
-            if estimated_return > old_q_value:
-                self.parent.tree_Q[self.prev_a] = estimated_return
-                self.parent.backpropagate(estimated_return)
+            new_q_value = -torch.max(self.tree_Q)
+            if old_q_value != new_q_value:
+                self.parent.tree_Q[self.prev_a] = new_q_value
+                self.parent.backpropagate()
 
-    
+
     def iterate_print(self):
         print(self.depth)
         for child in self.children:
