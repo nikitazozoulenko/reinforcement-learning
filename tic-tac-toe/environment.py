@@ -53,7 +53,7 @@ class GameBoard:
         return copy.deepcopy(self)
 
     
-    def restart(self):
+    def reset(self):
         '''Resets board to all zeros'''
         self.board = np.zeros(((self.size, self.size)))
         self.turn = "X"

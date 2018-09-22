@@ -26,6 +26,8 @@ def eps_greedy(action_values, eps):
 class MCTS:
     def __init__(self, board_size, win_length, network): 
         self.network = network
+        self.win_length = win_length
+        self.board_size = board_size
         self.root = Node(network=self.network, s=GameBoard(board_size, win_length), parent=None, prev_a=None, depth=0, is_terminate_state=False)
 
 
@@ -51,6 +53,10 @@ class MCTS:
     def get_best_action(self, eps):
         a = self.root.best_action(eps)
         return a
+
+
+    def reset(self):
+        self.root = Node(network=self.network, s=GameBoard(self.board_size, self.win_length), parent=None, prev_a=None, depth=0, is_terminate_state=False)
         
 
 class Node:
@@ -111,6 +117,7 @@ class Node:
         self.children[a] = Node(s=s_prime.reverse_player_positions(), network=self.network, parent=self, prev_a=a, depth=self.depth+1, is_terminate_state=terminate)
         if terminate:
             estimated_return = torch.tensor(r).float().to(device)
+            #self.children[a].tree_Q.zero_()
         else:
             estimated_return = r-torch.max(self.children[a].tree_Q.data)
         self.tree_Q[a] = estimated_return
