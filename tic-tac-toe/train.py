@@ -4,6 +4,7 @@ import os
 
 import numpy as np
 import torch
+import torch.nn as nn
 import torch.nn.functional as F
 import torch.optim as optim
 
@@ -13,6 +14,7 @@ from graphing import graph, values2ewma
 from mcts import MCTS, eps_greedy, board_to_tensor
 
 device = torch.device("cuda")
+model_path="save_dir/model.pth"
 
 class ExperienceReplay:
     def __init__(self, maxlen):
@@ -121,64 +123,87 @@ class OptimizerHandler:
     def __init__(self, match_handler, learning_rate=0.001):
         self.match_handler=match_handler
         self.learning_rate = learning_rate
-        self.optimizer = optim.Adam(self.match_handler.agent.mcts.network.parameters(), lr=learning_rate)
-
+        self.reset_optim_after_opponent_update = True
         self.MSE = nn.MSELoss()
+        self.create_optim()
+        
+
+    def create_optim(self):
+        self.optimizer = optim.RMSprop(self.match_handler.agent.mcts.network.parameters(), weight_decay=0.00001, lr=self.learning_rate)
 
 
-    def optimize_model(self, n_train=1, batch_size=64):
+    def optimize_model(self, n_train=10, batch_size=128):
         model = self.match_handler.agent.mcts.network
         experience_replay = self.match_handler.agent.experience_replay
+        model.train()
         for i in range(n_train):
             samples = experience_replay.sample()
             s, target = zip(*samples)
             s = torch.stack(s)
             target = torch.stack(target)
-
+            
+            self.optimizer.zero_grad()
             loss = self.MSE(model(s), target)
-            #TODO TODO TODO DO LEARNING HERE
-            #TODO TODO TODO
-            #TODO TODO TODO
-            print("START")
-            print(s)
-            print(s.size())
-            print(target)
-            print(target.size())
-            print("END")
-            assert True==False
+            loss.backward()
+            self.optimizer.step()
+        model.eval()
+        ##TODO TODO TODO
+        # add loss tracking with graphs
+        ##TODO TODO TODO
 
     
-    def update_opponent_if_needed(self, min_n_games=100):
-        n_games = self.match_handler.wins_agent + self.match_handler.draws_agent + self.match_handler.losses_agent
+    def update_opponent_if_needed(self, min_n_games=100, max_n_games=2000):
+        wins = self.match_handler.wins_agent
+        draws = self.match_handler.draws_agent
+        losses = self.match_handler.losses_agent
+        n_games = wins+draws+losses
         if n_games > min_n_games:
-            pass
-            #TODO DO STUFF
-            #TODO save agent
-            #TODO then replace opponents state dict with agent
-            #TODO maybe 
+            if wins/(wins+losses) > 0.60:
+                self.update_opponent()
+            elif n_games > max_n_games:
+                if wins/(wins+losses) > 0.5:
+                    self.update_opponent()
+                elif wins/(wins+losses) < 0.5:
+                    self.reset_agent_to_last_save()
 
 
-def create_agent_and_opponent(board_size, win_length, replay_maxlen, path="save_dir/model.pth"):
-    if not os.path.exists(path):
-        torch.save(FCC(board_size).to(device).state_dict(), path)
+    def reset_agent_to_last_save(self):
+        agent_network = self.match_handler.agent.mcts.network
+        opponent_network = self.match_handler.opponent.mcts.network
+        opponent_network.load_state_dict(torch.load(model_path))
+        agent_network.load_state_dict(torch.load(model_path))
+        if self.reset_optim_after_opponent_update:
+           self.create_optim()
+    
+
+    def update_opponent(self):
+        agent_network = self.match_handler.agent.mcts.network
+        opponent_network = self.match_handler.opponent.mcts.network
+        torch.save(agent_network.state_dict(), model_path)
+        opponent_network.load_state_dict(torch.load(model_path))
+        self.match_handler.reset_tally_results()
+        if self.reset_optim_after_opponent_update:
+            self.create_optim()
+
+
+def create_agent_and_opponent(board_size, win_length, replay_maxlen):
+    if not os.path.exists(model_path):
+        torch.save(FCC(board_size).to(device).state_dict(), model_path)
 
     #opponent
     opponent_network = FCC(board_size).to(device)
-    opponent_network.load_state_dict(torch.load(path))
+    opponent_network.load_state_dict(torch.load(model_path))
     opponent_network.eval()
     opponent_mcts = MCTS(board_size, win_length, opponent_network)
     opponent = Player(opponent_mcts, None)
 
     #agent
     agent_network = FCC(board_size).to(device)
-    agent_network.load_state_dict(torch.load(path))
+    agent_network.load_state_dict(torch.load(model_path))
     agent_network.eval()
     agent_mcts = MCTS(board_size, win_length, agent_network)
     agent = Player(agent_mcts, ExperienceReplay(replay_maxlen))
     return agent, opponent, GameBoard(board_size, win_length)
-
-
-
 
 
 def main():
@@ -186,16 +211,16 @@ def main():
     board_size = 3
     win_length = 3
     max_mcts_steps=100
-    mcts_eps=0.1
+    mcts_eps=0.05
     final_choose_eps=0
-    replay_maxlen = 1000
+    replay_maxlen = 5000
 
     #match handler
     match_handler = MatchHandler(*create_agent_and_opponent(board_size, win_length, replay_maxlen))
     optimizer_handler = OptimizerHandler(match_handler)
 
     #play some games
-    for i in range(10000):
+    for i in range(100000):
         match_handler.play_match(max_mcts_steps, mcts_eps, final_choose_eps)
         print("wins", match_handler.wins_agent)
         print("draws", match_handler.draws_agent)

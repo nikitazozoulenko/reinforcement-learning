@@ -141,11 +141,4 @@ class Node:
 
 
 if __name__=="__main__":
-    board_size=3
-    s = GameBoard(size=board_size, win_length=3)
-    network = FCC(size=board_size).to(device)
-    network.eval()
-    mcts = MCTS(root_state=s, network=network)
-    mcts.monte_carlo_tree_search()
-
-    mcts.root.iterate_print()
+    pass
