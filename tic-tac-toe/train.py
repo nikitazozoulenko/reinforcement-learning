@@ -65,7 +65,7 @@ class MatchHandler:
         self.reset_tally_results()
 
     
-    def play_match(self, max_mcts_steps, mcts_eps, final_choose_eps):
+    def play_match(self, max_mcts_steps, mcts_eps, final_choose_eps, do_print=False):
         #randomize player start
         self.game_board.reset()
         self.agent.mcts.reset()
@@ -78,7 +78,7 @@ class MatchHandler:
         #turn loop until terminate
         _ = players[1].monte_carlo_tree_search(max_mcts_steps, mcts_eps, final_choose_eps) #player waiting gets to start thinking first
         while True:
-            end_match, coords = self.play_turn(players[0], players[1], max_mcts_steps, mcts_eps, final_choose_eps)
+            end_match, coords = self.play_turn(players[0], players[1], max_mcts_steps, mcts_eps, final_choose_eps, do_print)
             if end_match:
                 break
             players.reverse()
@@ -95,7 +95,7 @@ class MatchHandler:
             self.draws_agent += 1
 
 
-    def play_turn(self, player, opponent, max_mcts_steps, mcts_eps, final_choose_eps):
+    def play_turn(self, player, opponent, max_mcts_steps, mcts_eps, final_choose_eps, do_print):
         picked_action = player.monte_carlo_tree_search(max_mcts_steps, mcts_eps, final_choose_eps)
         self.game_board.take_action(picked_action)
 
@@ -105,11 +105,13 @@ class MatchHandler:
             person.change_root_with_action(picked_action)
 
         terminate, coords = self.game_board.check_win_position()
-        # print("game board")
-        # print(terminate, coords)
-        # print(self.game_board)
-        # print()
-        # print()
+
+        if do_print:                
+            print("game board")
+            print(terminate, coords)
+            print(self.game_board)
+            print()
+            print()
         return terminate, coords
 
     
@@ -120,7 +122,7 @@ class MatchHandler:
     
 
 class OptimizerHandler:
-    def __init__(self, match_handler, learning_rate=0.001):
+    def __init__(self, match_handler, learning_rate=0.00001):
         self.match_handler=match_handler
         self.learning_rate = learning_rate
         self.reset_optim_after_opponent_update = True
@@ -132,7 +134,7 @@ class OptimizerHandler:
         self.optimizer = optim.RMSprop(self.match_handler.agent.mcts.network.parameters(), weight_decay=0.00001, lr=self.learning_rate)
 
 
-    def optimize_model(self, n_train=10, batch_size=128):
+    def optimize_model(self, n_train=100, batch_size=128):
         model = self.match_handler.agent.mcts.network
         experience_replay = self.match_handler.agent.experience_replay
         model.train()
@@ -152,7 +154,7 @@ class OptimizerHandler:
         ##TODO TODO TODO
 
     
-    def update_opponent_if_needed(self, min_n_games=100, max_n_games=2000):
+    def update_opponent_if_needed(self, min_n_games=500, max_n_games=2000):
         wins = self.match_handler.wins_agent
         draws = self.match_handler.draws_agent
         losses = self.match_handler.losses_agent
@@ -172,6 +174,7 @@ class OptimizerHandler:
         opponent_network = self.match_handler.opponent.mcts.network
         opponent_network.load_state_dict(torch.load(model_path))
         agent_network.load_state_dict(torch.load(model_path))
+        self.match_handler.reset_tally_results()
         if self.reset_optim_after_opponent_update:
            self.create_optim()
     
@@ -208,10 +211,10 @@ def create_agent_and_opponent(board_size, win_length, replay_maxlen):
 
 def main():
     #variables
-    board_size = 3
-    win_length = 3
-    max_mcts_steps=100
-    mcts_eps=0.05
+    board_size = 5
+    win_length = 4
+    max_mcts_steps=10
+    mcts_eps=0.1
     final_choose_eps=0
     replay_maxlen = 5000
 

@@ -40,6 +40,10 @@ class GameBoard:
         return False
 
     
+    def get_allowed_actions(self):
+        return np.where(self.board.reshape(-1)==0)[0]
+
+    
     def reverse_player_positions(self):
         self.board *= -1
         if self.turn == "X":

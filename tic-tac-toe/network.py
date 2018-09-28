@@ -2,7 +2,7 @@ import torch
 import torch.nn as nn
 
 class FCC(nn.Module):
-    def __init__(self, size=3, channels=64, n_layers=4):
+    def __init__(self, size=3, channels=128, n_layers=5):
         super(FCC, self).__init__()
         layers = [nn.Linear(size*size, channels),
                   nn.ReLU(inplace = True),
