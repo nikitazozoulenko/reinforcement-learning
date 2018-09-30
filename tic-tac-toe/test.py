@@ -10,7 +10,6 @@ import torch.optim as optim
 
 from network import FCC
 from environment import GameBoard, step
-from graphing import graph, values2ewma
 from mcts import MCTS, eps_greedy, board_to_tensor
 
 

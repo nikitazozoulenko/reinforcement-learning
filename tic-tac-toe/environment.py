@@ -41,7 +41,8 @@ class GameBoard:
 
     
     def get_allowed_actions(self):
-        return np.where(self.board.reshape(-1)==0)[0]
+        '''Returns np.array of size (-1). True == allowed'''
+        return (self.board.reshape(-1) == 0).astype(np.uint8)
 
     
     def reverse_player_positions(self):

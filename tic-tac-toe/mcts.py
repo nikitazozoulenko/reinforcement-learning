@@ -57,6 +57,13 @@ class MCTS:
 
     def reset(self):
         self.root = Node(network=self.network, s=GameBoard(self.board_size, self.win_length), parent=None, prev_a=None, depth=0, is_terminate_state=False)
+
+    
+    def get_original_root(self):
+        node = self.root
+        while node.parent != None:
+            node = node.parent
+        return node
         
 
 class Node:
@@ -68,6 +75,7 @@ class Node:
         self.depth = depth
         self.is_terminate_state = is_terminate_state
 
+        self.allowed_actions = torch.from_numpy(self.s.get_allowed_actions())
         self.tree_Q = self.network(board_to_tensor(s))[0]
         self.children = [None] * self.tree_Q.size(-1)
 
@@ -117,9 +125,9 @@ class Node:
         self.children[a] = Node(s=s_prime.reverse_player_positions(), network=self.network, parent=self, prev_a=a, depth=self.depth+1, is_terminate_state=terminate)
         if terminate:
             estimated_return = torch.tensor(r).float().to(device)
-            #self.children[a].tree_Q.zero_()
+            self.children[a].tree_Q.zero_()
         else:
-            estimated_return = r-torch.max(self.children[a].tree_Q.data)
+            estimated_return = r-torch.max(self.children[a].tree_Q.data[self.children[a].allowed_actions])
         self.tree_Q[a] = estimated_return
         self.backpropagate()
         
@@ -127,7 +135,7 @@ class Node:
     def backpropagate(self):
         if self.parent != None:
             old_q_value = self.parent.tree_Q[self.prev_a]
-            new_q_value = -torch.max(self.tree_Q)
+            new_q_value = -torch.max(self.tree_Q[self.allowed_actions])
             if old_q_value != new_q_value:
                 self.parent.tree_Q[self.prev_a] = new_q_value
                 self.parent.backpropagate()

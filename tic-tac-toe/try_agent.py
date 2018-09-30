@@ -10,7 +10,6 @@ import torch.optim as optim
 
 from network import FCC
 from environment import GameBoard, step
-from graphing import graph, values2ewma
 from mcts import MCTS, eps_greedy, board_to_tensor
 from train import model_path, create_agent_and_opponent, MatchHandler
 
@@ -18,8 +17,8 @@ def main():
     #variables
     board_size = 3
     win_length = 3
-    max_mcts_steps=800
-    mcts_eps=0.1
+    max_mcts_steps=100
+    mcts_eps=0.05
     final_choose_eps=0
     replay_maxlen = 5000
 
