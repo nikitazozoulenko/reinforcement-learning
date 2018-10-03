@@ -8,7 +8,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 import torch.optim as optim
 
-from network import FCC
+from network import CNN
 from environment import GameBoard, step
 from mcts import MCTS, eps_greedy, board_to_tensor
 from graph import graph, ewma
@@ -53,7 +53,6 @@ class Player:
 
     def change_root_with_action(self, action):
         self.mcts.change_root_with_action(action)
-
     
     # def add_to_experience_replay(self):
     #     s = board_to_tensor(self.mcts.root.s)[0]
@@ -137,7 +136,7 @@ class MatchHandler:
             print("game board")
             print(terminate, coords)
             print(self.game_board)
-            print(player.mcts.root.tree_Q)
+            print(player.mcts.root.tree_Q[player.mcts.root.allowed_actions], player.mcts.root.allowed_actions)
             print()
         return terminate, coords
 
@@ -171,23 +170,21 @@ class OptimizerHandler:
         model = self.match_handler.agent.mcts.network
         experience_replay = self.match_handler.agent.experience_replay
         model.train()
-        first_loss = None
-        for _ in range(self.n_iter_train):
-            samples = experience_replay.sample(self.batch_size)
-            s, target, allowed_a = zip(*samples)
-            s = torch.stack(s)
-            target = torch.stack(target)
-            allowed_a = torch.from_numpy(np.stack(allowed_a))#.to(device)
+        if len(experience_replay.deque) > self.batch_size:
+            for _ in range(self.n_iter_train):
+                samples = experience_replay.sample(self.batch_size)
+                s, target, allowed_a = zip(*samples)
+                s = torch.stack(s)
+                target = torch.stack(target)
+                allowed_a = torch.from_numpy(np.stack(allowed_a))
+                self.optimizer.zero_grad()
+                loss = self.MSE(model(s)[allowed_a], target[allowed_a])
+                loss.backward()
+                self.optimizer.step()
 
-            self.optimizer.zero_grad()
-            loss = self.MSE(model(s)[allowed_a], target[allowed_a])
-            first_loss = loss.data.cpu().numpy() if first_loss == None else first_loss
-            loss.backward()
-            self.optimizer.step()
+                self.losses += [(self.optim_counter, loss.data.cpu().numpy())]
+                self.optim_counter += 1
         model.eval()
-
-        self.losses += [(self.optim_counter, first_loss, loss.data.cpu().numpy())]
-        self.optim_counter += 1
 
     
     def update_opponent_if_needed(self, min_n_games=500, max_n_games=2000):
@@ -201,8 +198,8 @@ class OptimizerHandler:
             elif n_games > max_n_games:
                 if wins/(wins+losses) > 0.5:
                     self.update_opponent()
-                elif wins/(wins+losses) < 0.5:
-                    self.reset_agent_to_last_save()
+                # elif wins/(wins+losses) < 0.5:
+                #     self.reset_agent_to_last_save()
 
 
     def reset_agent_to_last_save(self):
@@ -229,17 +226,17 @@ class OptimizerHandler:
 
 def create_agent_and_opponent(board_size, win_length, replay_maxlen):
     if not os.path.exists(model_path):
-        torch.save(FCC(board_size).to(device).state_dict(), model_path)
+        torch.save(CNN(board_size).to(device).state_dict(), model_path)
 
     #opponent
-    opponent_network = FCC(board_size).to(device)
+    opponent_network = CNN(board_size).to(device)
     opponent_network.load_state_dict(torch.load(model_path))
     opponent_network.eval()
     opponent_mcts = MCTS(board_size, win_length, opponent_network)
     opponent = Player(opponent_mcts, None)
 
     #agent
-    agent_network = FCC(board_size).to(device)
+    agent_network = CNN(board_size).to(device)
     agent_network.load_state_dict(torch.load(model_path))
     agent_network.eval()
     agent_mcts = MCTS(board_size, win_length, agent_network)
@@ -249,18 +246,18 @@ def create_agent_and_opponent(board_size, win_length, replay_maxlen):
 
 def main():
     #variables
-    board_size = 3
-    win_length = 3
-    max_mcts_steps=10
-    mcts_eps=0.05
-    final_choose_eps=0
-    replay_maxlen = 2500
-    batch_size = 256
-    n_iter_train = 10
-    learning_rate = 0.001
-    min_n_games=100
-    max_n_games=200
-
+    board_size = 7
+    win_length = 5
+    max_mcts_steps=100
+    mcts_eps=0.1
+    final_choose_eps=0.05
+    replay_maxlen = 100000
+    batch_size = 512
+    n_iter_train = 5
+    learning_rate = 0.01
+    min_n_games=500
+    max_n_games=1000
+    
     #match handler
     match_handler = MatchHandler(*create_agent_and_opponent(board_size, win_length, replay_maxlen))
     optimizer_handler = OptimizerHandler(match_handler, batch_size, n_iter_train, learning_rate)
@@ -273,11 +270,12 @@ def main():
         print("wins", match_handler.wins_agent)
         print("draws", match_handler.draws_agent)
         print("losses", match_handler.losses_agent)
-        print("LOSS", optimizer_handler.losses[-1][-1])
+        if optimizer_handler.losses:
+            print("LOSS", optimizer_handler.losses[-1])
         optimizer_handler.update_opponent_if_needed(min_n_games, max_n_games)
 
-        if not i % 100 and i:
-            graph(ewma(np.array(optimizer_handler.losses)[:, -1], alpha=0))
+        # if not i % 2000 and i:
+        #     graph(ewma(np.array(optimizer_handler.losses)[:, -1], alpha=0))
 
 
 

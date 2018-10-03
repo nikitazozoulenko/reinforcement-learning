@@ -109,9 +109,9 @@ class Node:
         for i, child in enumerate(self.children):
             if child != None:
                 children_n_visited[i] = child.n_visited
-        #U = np.sqrt(2*np.log(self.n_visited)/children_n_visited).astype(np.float32)
-        #sorted_actions = eps_greedy(self.tree_Q + torch.from_numpy(U).to(device), eps)
-        sorted_actions = eps_greedy(self.tree_Q, eps)
+        U = np.sqrt(2*np.log(self.n_visited)/children_n_visited).astype(np.float32)
+        sorted_actions = eps_greedy(self.tree_Q + torch.from_numpy(U).to(device), eps)
+        # sorted_actions = eps_greedy(self.tree_Q, eps)
         for a in sorted_actions:
             if self.s.check_if_legal_action(a):
                 return a

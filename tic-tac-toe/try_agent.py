@@ -15,10 +15,10 @@ from train import model_path, create_agent_and_opponent, MatchHandler
 
 def main():
     #variables
-    board_size = 3
-    win_length = 3
-    max_mcts_steps=100
-    mcts_eps=0.05
+    board_size = 7
+    win_length = 4
+    max_mcts_steps=1
+    mcts_eps=0.0
     final_choose_eps=0
     replay_maxlen = 5000
 

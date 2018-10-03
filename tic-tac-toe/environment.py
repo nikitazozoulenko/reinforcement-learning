@@ -138,10 +138,13 @@ class GameBoard:
         
         elif kind == "diag":
             for i in range(self.size-abs(index-self.size+1)):
-                if board[i, i] == 1:
+                if index <= self.size-1:
+                    coord = (self.size-1-i, self.size-1-abs(index-self.size+1)-i)
+                else: #if index > self.size-1
+                    coord = (self.size-1-(i+abs(index-self.size+1)), self.size-1-i)
+                if board[coord] == 1:
                     count += 1
-                    coords += [(i, i)]
-
+                    coords += [coord]
                     if count == self.win_length:
                         return coords
                 else:

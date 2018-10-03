@@ -23,7 +23,7 @@ class FCC(nn.Module):
 
 
 class CNN(nn.Module):
-    def __init__(self, size=5, channels=64, n_layers=5):
+    def __init__(self, size=5, channels=32, n_layers=5):
         super(CNN, self).__init__()
         self.size = size
         self.channels = channels
@@ -37,7 +37,7 @@ class CNN(nn.Module):
 
 
     def forward(self, x):
-        x = self.conv(x.view(-1, self.size, self.size, 1))
+        x = self.conv(x.view(-1, 1, self.size, self.size))
         x = self.linear(x.view(-1, self.size*self.size*self.channels))
         return x
 
