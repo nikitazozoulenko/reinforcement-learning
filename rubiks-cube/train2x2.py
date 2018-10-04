@@ -1,95 +1,25 @@
 import random
 import collections
+import os
 
 import numpy as np
 import torch
+import torch.nn as nn
 import torch.nn.functional as F
 import torch.optim as optim
 
 from network import FCC2x2
 from cube2x2 import Cube
-from graphing import graph, values2ewma
+from mcts import MCTS, eps_greedy, cube_to_tensor
+
 
 device = torch.device("cuda")
-QNet = FCC2x2().to(device)
-QNet.eval()
+model_path="save_dir/model.pth"
 
-
-def cube_to_tensor(s):
-    tensor = torch.from_numpy(s.cube_array)
-    return tensor.to(device).view(1, -1)
-    #return tensor.to(device).view(1, 6*6, 3, 3)
-
-
-def eps_greedy(network, s, eps):
-    tensor = cube_to_tensor(s)
-    result = network(tensor)
-    if np.random.rand() > eps:
-        q, a = torch.max(result, dim=1)
-    else:
-        a = np.random.randint(len(s.actions))
-        a = torch.tensor([a], dtype=torch.long, device=device)
-        q = result[0,a]
-    return q, a#, tensor
-
-
-def step(s, a):
-    s_prime = s.copy().take_action(a)
-    terminate = s_prime.check_if_solved()
-    if terminate:
-        r = 40
-    else:
-        r = -1
-    return s_prime, r, terminate
-
-
-class Node():
-    def __init__(self, s):
-        self.s = s
-        self.expected_return = 0
-        global QNet
-
-        self.Q = QNet(cube_to_tensor(s))[0]
-        self.Q, _ = torch.sort(self.Q, descending=True)
-        self.taken = np.array([True] * 12)
-
-        self.children=[]
-        self.expand()
-
-
-    def expand(self):
-        idx = np.nonzero(self.taken)
-        print(idx)
-
-    
-    def step_cube(self, s, a):
-        s_prime = s.copy().take_action(a)
-        terminate = s_prime.check_if_solved()
-        if terminate:
-            r = 40
-        else:
-            r = -1
-        return s_prime, r, terminate
-
-
-
-
-
-
-
-    
-    def rollout(self):
-        pass
-
-if __name__ == "__main__":
-    s = Cube()
-    root = Node(s)
-
-
-class ReplayMemory():
+class ExperienceReplay:
     def __init__(self, maxlen):
-        self.deque = collections.deque(maxlen=maxlen)
         self.maxlen = maxlen
+        self.reset()
     
 
     def add(self, sars):
@@ -106,100 +36,246 @@ class ReplayMemory():
         samples = random.sample(self.deque, size)
         return samples
 
+    
+    def reset(self):
+        self.deque = collections.deque(maxlen=self.maxlen)
 
 
-def decrease_lr(optimizer):
-    for param_group in optimizer.param_groups:
-        print("updated learning rate: new lr:", param_group['lr']/10)
-        param_group['lr'] = param_group['lr']/10
+class Player:
+    def __init__(self, mcts, experience_replay):
+        self.mcts = mcts
+        self.experience_replay = experience_replay
+    
+
+    def monte_carlo_tree_search(self, max_mcts_steps, mcts_eps, final_choose_eps):
+        return self.mcts.monte_carlo_tree_search(max_mcts_steps, mcts_eps, final_choose_eps)
 
 
-def TDlearning():
-    gamma = 0.95
-    n_moves = 2
-    QNet = FCC2x2().to(device)
-    QNet.load_state_dict(torch.load("savedir/QNet_60k.pth"))
-    QNet_fixed = FCC2x2().to(device)
-    QNet_fixed.eval()
-    optimizer = optim.Adam(QNet.parameters(), lr=0.001)
-    #optimizer = optim.SGD(QNet.parameters(), lr=0.001, momentum = 0.9, weight_decay=0.0001)
-    replay_memory = ReplayMemory(maxlen=10000) # [(r, Q_tar, Q)]
-    returns = [] #[ep1, ep2, ep3, ...]
+    def change_root_with_action(self, action):
+        self.mcts.change_root_with_action(action)
 
-    num_episodes = 60001
-    mod_update_target_network = 10000
-    for episode in range(num_episodes):
-        if episode % mod_update_target_network == 0:
-            QNet_fixed.load_state_dict(QNet.state_dict())
-            torch.save(QNet.state_dict(), "savedir/QNet_"+str(episode//1000)+"k.pth")
-        if episode in []:
-            decrease_lr(optimizer)
 
-        s = Cube().shuffle(n_moves)
-        ctr = 0
-        terminate = False
-        total_return = 0
-        while not terminate:
-            QNet.eval()
-            eps = 0.05
-            #eps= 0.01
-            Q, a, s_tensor = eps_greedy(QNet, s, eps)
-            s_prime, r, terminate = step(s, a)
-            if not terminate:
-                Q_tar, a, s_tensor_prime = eps_greedy(QNet_fixed, s_prime, eps=0)
+    def add_to_experience_replay(self, node):
+        s = cube_to_tensor(node.s)[0]
+        tree_Q = node.tree_Q.data
+        self.experience_replay.add([s, tree_Q])
+
+
+class MatchHandler:
+    def __init__(self, agent, opponent, game_board):
+        self.agent = agent
+        self.opponent = opponent
+        self.game_board = game_board
+        self.reset_tally_results()
+
+    
+    def play_match(self, max_mcts_steps, mcts_eps, final_choose_eps, do_print=False):
+        #randomize player start
+        self.game_board.reset()
+        self.agent.mcts.reset()
+        self.opponent.mcts.reset()
+        players = [self.agent, self.opponent]
+        agent_starts = bool(random.randint(0,1))
+        if not agent_starts:
+            players.reverse()
+        if do_print:
+            if agent_starts:
+                print("AGENT STARTS")
             else:
-                Q_tar = 0
-                s_tensor_prime = None
-            replay_memory.add([s_tensor, a, r , s_tensor_prime, terminate])
+                print("OPPONENT STARTS")
 
-            QNet.train()
-            optimize_model(replay_memory, QNet, QNet_fixed, optimizer, gamma, batch_size=128)
-
-            s = s_prime
-            total_return = r + gamma*total_return
-
-            if episode % 100 == 0:
-                print("episode", episode, "return", total_return)
-                #print(Q)
-
-            ctr +=1
-            if ctr == n_moves:
+        #turn loop until terminate
+        _ = players[1].monte_carlo_tree_search(max_mcts_steps, mcts_eps, final_choose_eps) #player waiting gets to start thinking first
+        while True:
+            end_match, coords = self.play_turn(players[0], players[1], max_mcts_steps, mcts_eps, final_choose_eps, do_print)
+            if end_match:
                 break
+            players.reverse()
 
-        returns += [total_return]
+        #evaluate who won and tally results
+        if coords:
+            cross_won = self.game_board.board[coords[0]] > 0
+            if cross_won == agent_starts:
+                self.wins_agent += 1
+            else:
+                self.losses_agent += 1
+        else:
+            self.draws_agent += 1
+
+        #traverse tree backwards and add to experience replay
+        self.traverse_and_add_to_replay()
+
+
+    def traverse_and_add_to_replay(self):
+        node = self.agent.mcts.root
+        while node.parent != None:
+            node = node.parent
+            self.agent.add_to_experience_replay(node)
+        self.agent.add_to_experience_replay(node)
+
+
+    def play_turn(self, player, opponent, max_mcts_steps, mcts_eps, final_choose_eps, do_print):
+        picked_action = player.monte_carlo_tree_search(max_mcts_steps, mcts_eps, final_choose_eps)
+        self.game_board.take_action(picked_action)
+        player.change_root_with_action(picked_action)
+        opponent.change_root_with_action(picked_action)
+        # for person in [player, opponent]:
+        #     if person.experience_replay != None:
+        #         person.add_to_experience_replay()
+        #     person.change_root_with_action(picked_action)
+        terminate, coords = self.game_board.check_win_position()
+
+        if do_print:                
+            print("game board")
+            print(terminate, coords)
+            print(self.game_board)
+            print(player.mcts.root.tree_Q[player.mcts.root.allowed_actions], player.mcts.root.allowed_actions)
+            print()
+        return terminate, coords
+
+
+    def reset_tally_results(self):
+        self.wins_agent = 0
+        self.draws_agent = 0
+        self.losses_agent = 0
+    
+
+class OptimizerHandler:
+    def __init__(self, match_handler, batch_size, n_iter_train, learning_rate):
+        self.match_handler=match_handler
+        self.batch_size = batch_size
+        self.n_iter_train = n_iter_train
+        self.learning_rate = learning_rate
+        self.reset_optim_after_opponent_update = True
+        self.MSE = nn.MSELoss()
+        self.create_optim()
+
+        self.optim_counter = 0
+        self.losses = []
         
-    graph(values2ewma(returns))
 
-        
-
-def optimize_model(replay_memory, QNet, QNet_fixed, optimizer, gamma, batch_size=128):
-    samples = replay_memory.sample(batch_size)
-
-    if len(samples) >1:
-
-        s_tensor, a, r , s_tensor_prime, terminate = zip(*samples)
-
-        Q = QNet(torch.cat(s_tensor, dim=0))
-        Q = Q.gather(dim=1, index=torch.stack(a)).squeeze(1)
+    def create_optim(self):
+        self.optimizer = optim.SGD(self.match_handler.agent.mcts.network.parameters(), weight_decay=0.001, lr=self.learning_rate, momentum=0.9, nesterov=True)
+        # self.optimizer = optim.Adam(self.match_handler.agent.mcts.network.parameters(), weight_decay=0.001, lr=self.learning_rate)
 
 
-        Q_tar = torch.zeros(Q.size(0), device=device)
-        not_none_s_prime = [s for s in s_tensor_prime if s is not None]
-        if not not_none_s_prime == []:
-            not_none_s_prime = torch.cat(not_none_s_prime)
-            not_none_mask = torch.tensor([*map(lambda s: s is not None, s_tensor_prime)], device=device, dtype=torch.uint8)
-            Q_tar[not_none_mask] = QNet_fixed(not_none_s_prime).max(dim=1)[0].detach()
+    def optimize_model(self):
+        model = self.match_handler.agent.mcts.network
+        experience_replay = self.match_handler.agent.experience_replay
+        model.train()
+        if len(experience_replay.deque) > self.batch_size:
+            for _ in range(self.n_iter_train):
+                samples = experience_replay.sample(self.batch_size)
+                s, target, allowed_a = zip(*samples)
+                s = torch.stack(s)
+                target = torch.stack(target)
+                allowed_a = torch.from_numpy(np.stack(allowed_a))
+                self.optimizer.zero_grad()
+                loss = self.MSE(model(s)[allowed_a], target[allowed_a])
+                loss.backward()
+                self.optimizer.step()
 
-        r = torch.tensor(r, dtype=torch.float, device=device)
+                self.losses += [(self.optim_counter, loss.data.cpu().numpy())]
+                self.optim_counter += 1
+        model.eval()
 
-        optimizer.zero_grad()
-        loss = F.smooth_l1_loss(input=Q, target=(r+gamma*Q_tar), size_average=True, reduce=True)
-        loss.backward()
-        optimizer.step()
+    
+    def update_opponent_if_needed(self, min_n_games=500, max_n_games=2000):
+        wins = self.match_handler.wins_agent
+        draws = self.match_handler.draws_agent
+        losses = self.match_handler.losses_agent
+        n_games = wins+draws+losses
+        if n_games > min_n_games:
+            if wins/(wins+losses) > 0.60:
+                self.update_opponent()
+            elif n_games > max_n_games:
+                if wins/(wins+losses) > 0.5:
+                    self.update_opponent()
+                # elif wins/(wins+losses) < 0.5:
+                #     self.reset_agent_to_last_save()
 
-        global losses
-        losses += [loss.detach().cpu().numpy()]
+
+    def reset_agent_to_last_save(self):
+        agent_network = self.match_handler.agent.mcts.network
+        opponent_network = self.match_handler.opponent.mcts.network
+        opponent_network.load_state_dict(torch.load(model_path))
+        agent_network.load_state_dict(torch.load(model_path))
+        self.match_handler.reset_tally_results()
+        if self.reset_optim_after_opponent_update:
+            self.create_optim()
+            self.match_handler.agent.experience_replay.reset()
+    
+
+    def update_opponent(self):
+        agent_network = self.match_handler.agent.mcts.network
+        opponent_network = self.match_handler.opponent.mcts.network
+        torch.save(agent_network.state_dict(), model_path)
+        opponent_network.load_state_dict(torch.load(model_path))
+        self.match_handler.reset_tally_results()
+        if self.reset_optim_after_opponent_update:
+            self.create_optim()
+            self.match_handler.agent.experience_replay.reset()
+
+
+def create_agent(replay_maxlen):
+    if not os.path.exists(model_path):
+        torch.save(FCC2x2().to(device).state_dict(), model_path)
+
+    #opponent
+    opponent_network = CNN(board_size).to(device)
+    opponent_network.load_state_dict(torch.load(model_path))
+    opponent_network.eval()
+    opponent_mcts = MCTS(board_size, win_length, opponent_network)
+    opponent = Player(opponent_mcts, None)
+
+    #agent
+    agent_network = CNN(board_size).to(device)
+    agent_network.load_state_dict(torch.load(model_path))
+    agent_network.eval()
+    agent_mcts = MCTS(board_size, win_length, agent_network)
+    agent = Player(agent_mcts, ExperienceReplay(replay_maxlen))
+    return agent, opponent, GameBoard(board_size, win_length)
+
+
+def main():
+    #variables
+    max_mcts_steps=100
+    mcts_eps=0.1
+    final_choose_eps=0.05
+    replay_maxlen = 100000
+    batch_size = 512
+    n_iter_train = 5
+    learning_rate = 0.01
+    min_n_games=500
+    max_n_games=1000
+    
+    #match handler
+    match_handler = MatchHandler(*create_agent_and_opponent(replay_maxlen))
+    optimizer_handler = OptimizerHandler(match_handler, batch_size, n_iter_train, learning_rate)
+
+    #play some games
+    for i in range(100000):
+        match_handler.play_match(max_mcts_steps, mcts_eps, final_choose_eps)
+        optimizer_handler.optimize_model()
+        print()
+        print("wins", match_handler.wins_agent)
+        print("draws", match_handler.draws_agent)
+        print("losses", match_handler.losses_agent)
+        if optimizer_handler.losses:
+            print("LOSS", optimizer_handler.losses[-1])
+        optimizer_handler.update_opponent_if_needed(min_n_games, max_n_games)
+
+        # if not i % 2000 and i:
+        #     graph(ewma(np.array(optimizer_handler.losses)[:, -1], alpha=0))
 
 
 
+if __name__ == "__main__":
+    main()
 
+
+def evaluate_agent(agent, n_iter=100, max_search_steps=30):
+    pass
+    n_times_solved = 0
+    for i in range(n_iter):
+        pass

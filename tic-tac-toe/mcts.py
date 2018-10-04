@@ -80,9 +80,6 @@ class Node:
         self.children = [None] * self.tree_Q.size(-1)
 
         self.n_visited = 1
-
-        if depth == 0:
-            self.player_modulo = 1 # TODO TODO TODO
     
 
     def uct_traverse(self, eps=0.1):

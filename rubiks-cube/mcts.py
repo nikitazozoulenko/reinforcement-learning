@@ -1,19 +1,11 @@
-import random
-import collections
-
 import numpy as np
 import torch
 import torch.nn.functional as F
-import torch.optim as optim
 
-from network import FCC2x2
-from cube2x2 import Cube
-from graphing import graph, values2ewma
+from cube2x2 import Cube, step
+
 
 device = torch.device("cuda")
-QNet = FCC2x2().to(device)
-QNet.eval()
-
 
 def cube_to_tensor(s):
     tensor = torch.from_numpy(s.cube_array)
@@ -21,95 +13,127 @@ def cube_to_tensor(s):
 
 
 def eps_greedy(action_values, eps):
-    if eps == 0 or np.random.rand() > eps:
-        q, a = torch.max(action_values, dim=-1)
+    '''Returns sorted list of actions chosen eps-greedily'''
+    if np.random.rand() > eps:
+        _q, a = torch.sort(action_values, descending=True)
     else:
-        a = np.random.randint(action_values.size(-1))
-        a = torch.tensor([a], dtype=torch.long, device=device)
-        q = result[0,a]
-    return q, a
+        a = torch.randperm(action_values.size(-1))
+    return a
 
 
-def step(s, a):
-    s_prime = s.copy().take_action(a)
-    terminate = s_prime.check_if_solved()
-    if terminate:
-        r = 40
-    else:
-        r = -1
-    return s_prime, r, terminate
+class MCTS:
+    def __init__(self, board_size, win_length, network): 
+        self.network = network
+        self.win_length = win_length
+        self.board_size = board_size
+        self.root = Node(network=self.network, s=Cube(), parent=None, prev_a=None, is_terminate_state=False)
 
 
-class MCTS():
-    def __init__(self, root_state):
-        self.root = Node(s=root_state, prev_a=None, parent=None, depth=0, terminate=False)
-        self.t = 0
+    def monte_carlo_tree_search(self, max_steps=100, mcts_eps=0.1, final_choose_eps=0.1):
+        t=0
+        while t<max_steps:
+            self.root.uct_traverse(mcts_eps)
+            t += 1
+        a = self.get_best_action(final_choose_eps)
+        return a
+
+    
+    def get_experience_replay_item(self):
+        return self.root.tree_Q, self.root.s
+
+    
+    def change_root_with_action(self, a):
+        if self.root.children[a] == None:
+            self.root.simulate(a)
+        self.root = self.root.children[a]
 
 
-    def monte_carlo_tree_search(self):
-        while self.t<1:
-            leaf = self.root.uct_traverse()
-            leaf.simulate(eps=0.00)
-            self.t +=1
-        return self.best_path()
+    def get_best_action(self, eps):
+        a = self.root.best_action(eps)
+        return a
 
 
-    def best_path(self):
-        pass
+    def reset(self):
+        self.root = Node(network=self.network, s=Cube(), parent=None, prev_a=None, is_terminate_state=False)
+        #TODO shuffle cube???
+
+    
+    def get_original_root(self):
+        node = self.root
+        while node.parent != None:
+            node = node.parent
+        return node
+        
+
+class Node:
+    def __init__(self, network, s, parent, prev_a, is_terminate_state):
+        self.network = network
+        self.s = s
+        self.parent = parent
+        self.prev_a = prev_a
+        self.is_terminate_state = is_terminate_state
+
+        self.tree_Q = self.network(cube_to_tensor(s))[0]
+        self.children = [None] * self.tree_Q.size(-1)
+
+        self.n_visited = 1
     
 
-class Node():
-    def __init__(self, s, prev_a, parent, depth, terminate):
-        self.parent = parent
-        self.s = s
-        self.prev_a=prev_a
-        self.depth= depth
-        self.terminate=terminate
-        self.Q = QNet(cube_to_tensor(s))
-        self.tree_Q = np.zeros(self.Q.size(-1)) #torch.zeros((1, self.Q.size(-1)), device=device)
-        self.children = [None] * self.Q.size(-1)
-        self.visited = 1
+    def uct_traverse(self, eps=0.1):
+        '''Recursively returns new simulated node picked with eps-greedy UCT'''
+        #check if terminate and enumerate
+        self.n_visited += 1
+        if self.is_terminate_state:
+            return self
 
+        #Get best legal action
+        a = self.best_action(eps)
 
-    def uct_traverse(self):
-        children_n_visit = []
-        for child in self.children:
-            if child == None:
-                return self
-            children_n_visit += [child.visited]
-        children_n_visit = torch.tensor(visited, device=device)
-
-        U = (np.log(self.visited) / children_n_visit) ** 0.5
-        q, a = eps_greedy(self.Q+U, eps=0.01)
-        return self.children[a].uct_traverse()
-
-
-    def simulate(self, eps):
-        #########################TODO TODO TODO eps not implemented yet TODO TODO TODO############################
-        q, a = torch.sort(Q, dim=-1, descending=True)
-        for action in a[0]:
-            if self.children[action] != None:
-                a = action
-                break
-        
-        s_prime, r, terminate = step(self.s, a)
-        self.children[action] = Node(s=s_prime, prev_a=a, parent=self, depth=self.depth+1, termiante=terminate)
-        if termiante:
-            estimated_return = r
+        #recursively returns the new simulated node.
+        if self.children[a] == None:
+            return self.simulate(a)
         else:
-            estimated_return = r+torch.max(self.children[action].Q)
-        self.children[action].backpropagate(estimated_return)
+            return self.children[a].uct_traverse()
 
 
-    def backpropagate(self, estimated_return):
+    def best_action(self, eps):
+        '''Returns the best action to pick. Also checks that the move is legal'''
+        #Get statistics for UCT formula
+        children_n_visited = np.ones((self.tree_Q.size(-1)))
+        for i, child in enumerate(self.children):
+            if child != None:
+                children_n_visited[i] = child.n_visited
+        U = np.sqrt(2*np.log(self.n_visited)/children_n_visited).astype(np.float32)
+        sorted_actions = eps_greedy(self.tree_Q + torch.from_numpy(U).to(device), eps)
+        # sorted_actions = eps_greedy(self.tree_Q, eps)
+        for a in sorted_actions:
+            if self.s.check_if_legal_action(a):
+                return a
+        
+        #the program should never get to this line
+        raise RuntimeError("NO ACTIONS WERE LEGAL")
+
+    
+    def simulate(self, a):
+        s_prime, r, terminate = step(self.s, a)
+        self.children[a] = Node(s=s_prime.reverse_player_positions(), network=self.network, parent=self, prev_a=a, is_terminate_state=terminate)
+        if terminate:
+            estimated_return = torch.tensor(r).float().to(device)
+            self.children[a].tree_Q.zero_()
+        else:
+            estimated_return = r+torch.max(self.children[a].tree_Q.data)
+        self.tree_Q[a] = estimated_return
+        self.backpropagate()
+        
+
+    def backpropagate(self):
         if self.parent != None:
-            old = self.parent[self.prev_a].tree_Q[self.prev_a]
-            if estimated_return-1> old:
-                self.parent[self.prev_a].tree_Q[self.prev_a] = estimated_return-1
-                self.parent.backpropagate(new_estim_return)
+            old_q_value = self.parent.tree_Q[self.prev_a]
+            new_q_value = torch.max(self.tree_Q)
+            if old_q_value != new_q_value:
+                self.parent.tree_Q[self.prev_a] = new_q_value
+                self.parent.backpropagate()
 
 
 if __name__=="__main__":
-    n_moves = 1
-    s = Cube().shuffle(n_moves)
-    mcts = MCTS(root_state = s, max_depth=n_moves)
+    pass

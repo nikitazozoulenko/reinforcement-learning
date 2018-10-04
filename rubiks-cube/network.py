@@ -70,8 +70,6 @@ class ResidualBlock(nn.Module):
         
     def forward(self, x):
         res = x
-
         out = self.block(x)
         out = self.relu(out+res)
-        
         return out

@@ -2,6 +2,16 @@ import copy
 import numpy as np
 
 
+def step(s, a):
+    s_prime = s.copy().take_action(a)
+    terminate = s_prime.check_if_solved()
+    if terminate:
+        r = 1
+    else:
+        r = -1
+    return s_prime, r, terminate
+
+
 class Cube():
     def __init__(self):
         self.cube_array = self.init_cube()
