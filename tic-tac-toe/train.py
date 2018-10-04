@@ -249,14 +249,14 @@ def main():
     board_size = 7
     win_length = 5
     max_mcts_steps=100
-    mcts_eps=0.1
+    mcts_eps=0.05
     final_choose_eps=0.05
     replay_maxlen = 100000
     batch_size = 512
     n_iter_train = 5
     learning_rate = 0.01
-    min_n_games=500
-    max_n_games=1000
+    min_n_games=300
+    max_n_games=500
     
     #match handler
     match_handler = MatchHandler(*create_agent_and_opponent(board_size, win_length, replay_maxlen))
