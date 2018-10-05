@@ -87,7 +87,7 @@ class MatchHandler:
 
     def traverse_and_add_to_replay(self):
         #TODO TODO TODO TODO might want to change this func TODO TODO TODO TODO
-        node = self.agent.mcts.root
+        node = self.agent.mcts.root.parent
         while node.parent != None:
             node = node.parent
             self.agent.add_to_experience_replay(node)
@@ -138,9 +138,11 @@ class OptimizerHandler:
                 self.optim_counter += 1
         model.eval()
     
+
     def save_model(self):
         agent_network = self.match_handler.agent.mcts.network
         torch.save(agent_network.state_dict(), model_path)
+
 
     def save_model_and_reset_optim(self):
         self.save_model()
@@ -162,7 +164,7 @@ class OptimizerHandler:
                 if solve_rate > 0.8:
                     self.n_shuffle+=1
                     self.match_handler.reset_tally_results()
-                    #self.save_model_and_reset_optim()
+                    self.save_model_and_reset_optim()
                 print("solve rate", solve_rate)
 
 
@@ -199,7 +201,7 @@ def main():
     mcts_eps=0.05
     final_choose_eps=0
     replay_maxlen = 100000
-    batch_size = 1024
+    batch_size = 512
     n_iter_train = 10
     learning_rate = 0.01
     n_eval = 100
