@@ -178,6 +178,7 @@ class OptimizerHandler:
                 target = torch.stack(target)
                 allowed_a = torch.from_numpy(np.stack(allowed_a))
                 self.optimizer.zero_grad()
+                print(model(s))
                 loss = self.MSE(model(s)[allowed_a], target[allowed_a])
                 loss.backward()
                 self.optimizer.step()
@@ -248,7 +249,7 @@ def main():
     #variables
     board_size = 7
     win_length = 5
-    max_mcts_steps=100
+    max_mcts_steps=10
     mcts_eps=0.05
     final_choose_eps=0.05
     replay_maxlen = 100000

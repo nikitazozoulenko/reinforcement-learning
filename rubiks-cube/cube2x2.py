@@ -317,7 +317,7 @@ class Cube():
             while perms[i+1] == perms[i]+anti:
                 perms[i+1] = np.random.randint(0, len(self.actions))
             self.actions[perms[i]]()
-        if perms:
+        if n_moves != 0:
             self.actions[perms[-1]]()
         return self
 
