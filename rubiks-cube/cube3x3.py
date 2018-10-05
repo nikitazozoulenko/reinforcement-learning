@@ -1,5 +1,21 @@
 import copy
 import numpy as np
+import torch
+
+
+def cube_to_tensor(s):
+    tensor = torch.from_numpy(s.cube_array)
+    return tensor.to(device).view(1, -1)
+
+
+def step(s, a):
+    s_prime = s.copy().take_action(a)
+    terminate = s_prime.check_if_solved()
+    if terminate:
+        r = 1
+    else:
+        r = -1
+    return s_prime, r, terminate
 
 
 class Cube():
@@ -306,6 +322,7 @@ class Cube():
     def copy(self):
         return copy.deepcopy(self)
 
+
     def shuffle(self, n_moves = 1):
         perms = np.random.random_integers(0, len(self.actions)-1, size=n_moves)
         for i in range(0, n_moves-1):
@@ -313,7 +330,8 @@ class Cube():
             while perms[i] == perms[i]+anti:
                 perms[i+1] = np.random.randint(0, len(self.actions))
             self.actions[perms[i]]()
-        self.actions[perms[-1]]()
+        if n_moves != 0:
+            self.actions[perms[-1]]()
         return self
 
 if __name__ == "__main__":

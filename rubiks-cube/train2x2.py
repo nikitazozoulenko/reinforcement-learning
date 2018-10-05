@@ -9,8 +9,8 @@ import torch.nn.functional as F
 import torch.optim as optim
 
 from network import FCC2x2
-from cube2x2 import Cube
-from mcts import MCTS, eps_greedy, cube_to_tensor
+from cube2x2 import Cube, cube_to_tensor
+from mcts import MCTS, eps_greedy
 
 
 device = torch.device("cuda")

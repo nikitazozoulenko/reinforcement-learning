@@ -2,15 +2,10 @@ import numpy as np
 import torch
 import torch.nn.functional as F
 
-from cube2x2 import Cube, step
+from cube2x2 import Cube, step, cube_to_tensor
 
 
 device = torch.device("cuda")
-
-def cube_to_tensor(s):
-    tensor = torch.from_numpy(s.cube_array)
-    return tensor.to(device).view(1, -1)
-
 
 def eps_greedy(action_values, eps):
     '''Returns sorted list of actions chosen eps-greedily'''

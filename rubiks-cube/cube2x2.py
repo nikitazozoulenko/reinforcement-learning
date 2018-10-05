@@ -1,5 +1,11 @@
 import copy
 import numpy as np
+import torch
+
+
+def cube_to_tensor(s):
+    tensor = torch.from_numpy(s.cube_array)
+    return tensor.to(device).view(1, -1)
 
 
 def step(s, a):
