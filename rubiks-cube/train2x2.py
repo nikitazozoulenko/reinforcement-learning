@@ -85,13 +85,27 @@ class MatchHandler:
         self.traverse_and_add_to_replay()
 
 
+    # def traverse_and_add_to_replay(self):
+    #     #TODO TODO TODO TODO might want to change this func TODO TODO TODO TODO
+    #     node = self.agent.mcts.root.parent
+    #     while node.parent != None:
+    #         node = node.parent
+    #         self.agent.add_to_experience_replay(node)
+    #     self.agent.add_to_experience_replay(node)
+
+
     def traverse_and_add_to_replay(self):
-        #TODO TODO TODO TODO might want to change this func TODO TODO TODO TODO
-        node = self.agent.mcts.root.parent
-        while node.parent != None:
-            node = node.parent
-            self.agent.add_to_experience_replay(node)
+        '''Traverses to root, then recursively adds ALL visited states to replay memory'''
+        root = self.agent.mcts.get_original_root()
+        self._recursive_traverse_add(root)
+
+
+    def _recursive_traverse_add(self, node):
         self.agent.add_to_experience_replay(node)
+        for child in node.children:
+            if child != None:
+                if not child.is_terminate_state:
+                    self._recursive_traverse_add(child)
 
 
     def reset_tally_results(self):

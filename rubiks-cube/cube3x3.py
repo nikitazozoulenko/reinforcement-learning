@@ -6,8 +6,15 @@ import torch
 device = torch.device("cuda")
 
 def cube_to_tensor(s):
-    tensor = torch.from_numpy(s.cube_array)
-    return tensor.to(device).view(1, -1)
+    top = s.cube_array[:, 0, :, :]
+    middle0 = s.cube_array[:, 1, 0:1, :]
+    middle1 = s.cube_array[:, 1, 2:3, :]
+    bottom = s.cube_array[:, 2, :, :]
+    #TODO STACK TODO#
+    tensor = torch.from_numpy(torch.concat([top, middle0, middle1, bottom]))
+    tensor = tensor.to(device).view(1, -1)
+    print(tensor, tensor.size(), tensor.type())
+    return tensor
 
 
 def step(s, a):
@@ -338,11 +345,4 @@ class Cube():
 
 if __name__ == "__main__":
     cube = Cube()
-    cube2 = cube.copy()
-    cube.shuffle(n_moves=2)
-    solved = cube.check_if_solved()
-    print(solved)
-    cube.print()
-    solved2 = cube2.check_if_solved()
-    print(solved2)
-    cube2.print()
+    tensor = cube_to_tensor(cube)
