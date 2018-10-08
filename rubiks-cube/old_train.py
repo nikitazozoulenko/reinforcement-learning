@@ -29,7 +29,7 @@ class ExperienceReplay:
         self.deque.append(sars)
 
     
-    def sample(self, batch_size):
+    def sample(self, batch_size=64):
         if len(self.deque) < batch_size:
             size = len(self.deque)
         else:
@@ -57,10 +57,9 @@ class Player:
 
 
     def add_to_experience_replay(self, node):
-        states = cube_to_tensor(node.s)
+        s = cube_to_tensor(node.s)[0]
         tree_Q = node.tree_Q.data
-        for state in states:
-            self.experience_replay.add([state, tree_Q])
+        self.experience_replay.add([s, tree_Q])
 
 
 class MatchHandler:
@@ -126,8 +125,10 @@ class OptimizerHandler:
         self.learning_rate = learning_rate
         self.MSE = nn.MSELoss()
 
-        self.n_shuffle=3
+        self.optim_counter = 0
+        self.losses = []
 
+        self.n_shuffle=6
         self.create_optim()
         self.create_grapher()
 
@@ -146,16 +147,18 @@ class OptimizerHandler:
         experience_replay = self.match_handler.agent.experience_replay
         model.train()
         if len(experience_replay.deque) > self.batch_size:
-            samples = experience_replay.sample(self.batch_size)
-            s, target = zip(*samples)
-            s = torch.stack(s)
-            target = torch.stack(target)
-            self.optimizer.zero_grad()
-            loss = self.MSE(model(s), target)
-            loss.backward()
-            self.optimizer.step()
+            for _ in range(self.n_iter_train):
+                samples = experience_replay.sample(self.batch_size)
+                s, target = zip(*samples)
+                s = torch.stack(s)
+                target = torch.stack(target)
+                self.optimizer.zero_grad()
+                loss = self.MSE(model(s), target)
+                loss.backward()
+                self.optimizer.step()
 
-            self.grapher.write(str(loss.data.cpu().numpy()))
+                self.grapher.write(str(loss.data.cpu().numpy()))
+                self.optim_counter += 1
         model.eval()
     
 
@@ -173,22 +176,22 @@ class OptimizerHandler:
 
     
     def train(self, max_mcts_steps, mcts_eps, final_choose_eps, n_eval):
-        while True:
-            #eval
-            solve_rate = self.evaluate_agent(max_mcts_steps, mcts_eps, final_choose_eps, n_eval)
-            print("solve rate", solve_rate, "n_shuffle", self.n_shuffle)
-            if solve_rate > 0.9:
-                self.n_shuffle+=1
-                self.match_handler.reset_tally_results()
-                self.save_model_and_reset_optim_and_grapher()
-                print("saving model and increasing nshuffle to", self.n_shuffle)
-                continue
-
+        for i in range(1000000):
             #train
-            # for _ in range(self.n_iter_solve_cube):
-            #     self.match_handler.solve_one_cube(max_mcts_steps, mcts_eps, final_choose_eps, self.n_shuffle)
-            for _ in range(self.n_iter_train):
-                self.optimize_model()
+            self.match_handler.solve_one_cube(max_mcts_steps, mcts_eps, final_choose_eps, self.n_shuffle)
+            self.optimize_model()
+
+            if i % 50 == 0:
+                print(i, "did", self.match_handler.n_did_solve, "didnt", self.match_handler.n_didnt_solve, "nshuffle", self.n_shuffle)
+
+            #eval
+            if i % 1000 == 0 and i != 0:
+                solve_rate = self.evaluate_agent(max_mcts_steps, mcts_eps, final_choose_eps, n_eval)
+                if solve_rate > 0.9:
+                    self.n_shuffle+=1
+                    self.match_handler.reset_tally_results()
+                    self.save_model_and_reset_optim_and_grapher()
+                print("solve rate", solve_rate)
 
 
 
@@ -202,7 +205,6 @@ class OptimizerHandler:
                 if terminate:
                     n_times_solved+=1
                     break
-            self.match_handler.traverse_and_add_to_replay()
         return n_times_solved/n_eval
 
 
@@ -225,8 +227,8 @@ def main():
     mcts_eps=0.05
     final_choose_eps=0
     replay_maxlen = 1000000
-    batch_size = 8092
-    n_iter_train = 1000
+    batch_size = 2048
+    n_iter_train = 10
     learning_rate = 0.01
     n_eval = 100
     
@@ -236,6 +238,9 @@ def main():
 
     #train on some cubes
     optimizer_handler.train(max_mcts_steps, mcts_eps, final_choose_eps, n_eval)
+
+
+
 
 
 if __name__ == "__main__":

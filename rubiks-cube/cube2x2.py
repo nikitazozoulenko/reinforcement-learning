@@ -5,9 +5,9 @@ import torch
 
 device = torch.device("cuda")
 
-def cube_to_tensor(s):
-    tensor = torch.from_numpy(s.cube_array)
-    return tensor.to(device).view(1, -1)
+def cube_to_tensor(cube):
+    tensor = torch.from_numpy(cube.get_cube_symmetries())
+    return tensor.to(device).view(24, -1)
 
 
 def step(s, a):
@@ -346,24 +346,37 @@ class Cube():
             self.b_prime()
 
 
+    def get_cube_symmetries(self):
+        cube = self.copy()
+
+        f0 = [cube.r_prime, cube.l]
+        f1 = [cube.r_prime, cube.l]
+        f2 = [cube.r_prime, cube.l]
+        f3 = [cube.r_prime, cube.l]
+        f4 = [cube.u, cube.d_prime]
+        f5 = [cube.u, cube.u, cube.d_prime, cube.d_prime]
+        rotate_face_perms = [cube.f, cube.b_prime]
+
+        list_arrays = []
+        for perms in [f0, f1, f2, f3, f4, f5]:
+            for perm in perms:
+                perm()
+            for _ in range(4):
+                for perm in rotate_face_perms:
+                    perm()
+                list_arrays += [np.copy(cube.cube_array)]
+        return np.array(list_arrays)
+            
+
+
 if __name__ == "__main__":
-    # cube = Cube()
-    # cube2 = cube.copy()
-    # cube3 = cube.copy()
-    # cube.shuffle(n_moves=2)
-    # solved = cube.check_if_solved()
-    # print(solved)
-    # cube.print()
-    # solved2 = cube2.check_if_solved()
-    # print(solved2)
-    # cube2.print()
-    # cube3.r()
-    # cube3.l_prime()
-    # solved3 = cube3.check_if_solved()
-    # print(solved3)
-    # cube3.print()
     cube = Cube()
-    cube.shuffle(n_moves=1)
+    cube.shuffle(n_moves=0)
     solved = cube.check_if_solved()
-    cube.print()
-    print(solved)
+
+    list_arrays = cube.get_cube_symmetries()
+    print(list_arrays.shape)
+
+    # for i, arr in enumerate(list_arrays):
+    #     if arr.all() == list_arrays[0].all():
+    #         print(i, "true")

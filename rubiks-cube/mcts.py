@@ -65,7 +65,7 @@ class Node:
         self.prev_r = prev_r
         self.is_terminate_state = is_terminate_state
 
-        self.tree_Q = self.network(cube_to_tensor(s))[0]
+        self.tree_Q = torch.mean(self.network(cube_to_tensor(s)), dim=0)
         self.children = [None] * self.tree_Q.size(-1)
 
         self.n_visited = 1
@@ -95,9 +95,9 @@ class Node:
         for i, child in enumerate(self.children):
             if child != None:
                 children_n_visited[i] = child.n_visited
-        U = np.sqrt(2*np.log(self.n_visited)/children_n_visited).astype(np.float32)
-        a = eps_greedy(self.tree_Q + torch.from_numpy(U).to(device), eps)
-        # a = eps_greedy(self.tree_Q, eps)
+        # U = np.sqrt(2*np.log(self.n_visited)/children_n_visited).astype(np.float32)
+        # a = eps_greedy(self.tree_Q + torch.from_numpy(U).to(device), eps)
+        a = eps_greedy(self.tree_Q, eps)
         return a
         
         #the program should never get to this line
