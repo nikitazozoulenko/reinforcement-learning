@@ -133,7 +133,7 @@ class OptimizerHandler:
     def check_if_increase_n_shuffle(self, i):
         if len(self.deque_latest_results) >= self.n_eval:
             solve_rate = self.n_latest_wins/self.n_eval
-            if i % 100==0:
+            if i % 10==0:
                 print(i, "solve_rate", solve_rate)
             if solve_rate > self.min_solve_rate:
                 self.n_shuffle+=1
@@ -143,13 +143,38 @@ class OptimizerHandler:
                 print("saving model and increasing nshuffle to", self.n_shuffle)
 
 
+    # def attempt_random_cube(self, max_mcts_steps, mcts_eps, final_choose_eps):
+    #     #solve cube
+    #     self.agent.mcts.reset(self.n_shuffle)
+    #     for _ in range(self.n_shuffle*2):
+    #         a, terminate = self.agent.mcts.monte_carlo_tree_search(max_mcts_steps, mcts_eps, final_choose_eps)
+    #         if terminate:
+    #             break
+    #     self.traverse_and_add_to_replay()
+
+    #     #update eval statistics
+    #     if len(self.deque_latest_results) == self.n_eval:
+    #         first = self.deque_latest_results.popleft()
+    #         if first == True:
+    #             self.n_latest_wins -= 1
+    #         else:
+    #             self.n_latest_losses -= 1
+        
+    #     self.deque_latest_results.append(terminate)
+    #     if terminate == True:
+    #         self.n_latest_wins += 1
+    #     else:
+    #         self.n_latest_losses += 1
+
+
     def attempt_random_cube(self, max_mcts_steps, mcts_eps, final_choose_eps):
         #solve cube
         self.agent.mcts.reset(self.n_shuffle)
-        for _ in range(self.n_shuffle*2):
-            a, terminate = self.agent.mcts.monte_carlo_tree_search(max_mcts_steps, mcts_eps, final_choose_eps)
+        a, terminate = self.agent.mcts.monte_carlo_tree_search(max_mcts_steps, mcts_eps, final_choose_eps)
+        for _ in range(self.n_shuffle*2-1):
             if terminate:
                 break
+            a, terminate = self.agent.mcts.monte_carlo_tree_search(max_steps=0, mcts_eps=0, final_choose_eps=0)
         self.traverse_and_add_to_replay()
 
         #update eval statistics
@@ -193,18 +218,18 @@ def create_agent(replay_maxlen):
 
 def main():
     #mcts variables
-    max_mcts_steps=50
+    max_mcts_steps=500
     mcts_eps=0.05
     final_choose_eps=0
 
     #train variables
-    replay_maxlen = 100000
+    replay_maxlen = 50000
     batch_size = 8092
     learning_rate = 0.1
     n_train_per_solve = 10
     n_eval = 200
     min_solve_rate = 0.9
-    n_shuffle = 3
+    n_shuffle = 2
     
     #optimizer handler
     optimizer_handler = OptimizerHandler(create_agent(replay_maxlen), batch_size, learning_rate, n_train_per_solve, n_eval, min_solve_rate, n_shuffle)
