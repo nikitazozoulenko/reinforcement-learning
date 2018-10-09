@@ -1,6 +1,7 @@
 import random
 import collections
 import os
+import pickle
 
 import numpy as np
 import torch
@@ -16,6 +17,7 @@ from graphing import Grapher
 
 device = torch.device("cuda")
 model_path="save_dir/model.pth"
+experience_path="save_dir/exp_replay.pkl"
 
 class ExperienceReplay:
     def __init__(self, maxlen):
@@ -63,87 +65,40 @@ class Player:
             self.experience_replay.add([state, tree_Q])
 
 
-class MatchHandler:
-    def __init__(self, agent):
-        self.agent = agent
-        self.reset_tally_results()
-
-
-    def solve_one_cube(self, max_mcts_steps, mcts_eps, final_choose_eps, n_shuffle):
-        #play one cube,  MAX TURNS == 2*N_SHUFFLE
-        self.agent.mcts.reset(n_shuffle)
-        for _ in range(2*n_shuffle):
-            _a, terminate = self.agent.mcts.monte_carlo_tree_search(max_mcts_steps, mcts_eps, final_choose_eps)
-            if terminate:
-                break
-
-        #tally results
-        if terminate:
-            self.n_did_solve += 1
-        else:
-            self.n_didnt_solve += 1
-
-        #traverse tree backwards and add to experience replay
-        self.traverse_and_add_to_replay()
-
-
-    def traverse_and_add_to_replay(self):
-        node = self.agent.mcts.root.parent
-        while node.parent != None:
-            node = node.parent
-            self.agent.add_to_experience_replay(node)
-        self.agent.add_to_experience_replay(node)
-
-
-    def reset_tally_results(self):
-        self.n_did_solve = 0
-        self.n_didnt_solve = 0
-
-
-    ##### This traverse method didnt work to learn the network how to do stuff right
-    # def traverse_and_add_to_replay(self):
-    #     '''Traverses to root, then recursively adds ALL visited states to replay memory'''
-    #     root = self.agent.mcts.get_original_root()
-    #     self._recursive_traverse_add(root)
-
-
-    # def _recursive_traverse_add(self, node):
-    #     self.agent.add_to_experience_replay(node)
-    #     for child in node.children:
-    #         if child != None:
-    #             if not child.is_terminate_state:
-    #                 self._recursive_traverse_add(child)
-
-
-
-    
-
 class OptimizerHandler:
-    def __init__(self, match_handler, batch_size, n_iter_train, learning_rate):
-        self.match_handler=match_handler
+    def __init__(self, agent, batch_size, learning_rate, n_train_per_solve, n_eval, min_solve_rate, n_shuffle):
+        self.agent=agent
         self.batch_size = batch_size
-        self.n_iter_train = n_iter_train
         self.learning_rate = learning_rate
-        self.MSE = nn.MSELoss()
-
-        self.n_shuffle=3
+        self.n_train_per_solve = n_train_per_solve
+        self.n_eval = n_eval
+        self.min_solve_rate = min_solve_rate
+        self.n_shuffle=n_shuffle
 
         self.create_optim()
         self.create_grapher()
+        self.create_results_tracker()
 
-    
+        self.MSE = nn.MSELoss()
+
+
+    def create_results_tracker(self):
+        self.n_latest_wins = 0
+        self.n_latest_losses = 0
+        self.deque_latest_results = collections.deque(maxlen=self.n_eval)
+
+
     def create_grapher(self):
         self.grapher = Grapher("save_dir/loss_folder/losses_n"+ str(self.n_shuffle)+".txt")
         
 
     def create_optim(self):
-        self.optimizer = optim.SGD(self.match_handler.agent.mcts.network.parameters(), weight_decay=0.0001, lr=self.learning_rate, momentum=0.9)
-        # self.optimizer = optim.Adam(self.match_handler.agent.mcts.network.parameters(), weight_decay=0.0001, lr=self.learning_rate)
+        self.optimizer = optim.SGD(self.agent.mcts.network.parameters(), weight_decay=0.0001, lr=self.learning_rate, momentum=0.9)
 
 
     def optimize_model(self):
-        model = self.match_handler.agent.mcts.network
-        experience_replay = self.match_handler.agent.experience_replay
+        model = self.agent.mcts.network
+        experience_replay = self.agent.experience_replay
         model.train()
         if len(experience_replay.deque) > self.batch_size:
             samples = experience_replay.sample(self.batch_size)
@@ -157,54 +112,67 @@ class OptimizerHandler:
 
             self.grapher.write(str(loss.data.cpu().numpy()))
         model.eval()
-    
 
-    def save_model(self):
-        agent_network = self.match_handler.agent.mcts.network
+    
+    def save_model_and_reset_grapher(self):
+        agent_network = self.agent.mcts.network
         torch.save(agent_network.state_dict(), model_path)
-
-
-    def save_model_and_reset_optim_and_grapher(self):
-        self.save_model()
-        self.match_handler.reset_tally_results()
-        self.create_optim()
+        with open(experience_path, "wb") as f:
+            pickle.dump(self.agent.experience_replay, f, pickle.HIGHEST_PROTOCOL)
         self.create_grapher()
-        self.match_handler.agent.experience_replay.reset()
 
-    
-    def train(self, max_mcts_steps, mcts_eps, final_choose_eps, n_eval):
-        while True:
-            #eval
-            solve_rate = self.evaluate_agent(max_mcts_steps, mcts_eps, final_choose_eps, n_eval)
-            print("solve rate", solve_rate, "n_shuffle", self.n_shuffle)
-            if solve_rate > 0.9:
-                self.n_shuffle+=1
-                self.match_handler.reset_tally_results()
-                self.save_model_and_reset_optim_and_grapher()
-                print("saving model and increasing nshuffle to", self.n_shuffle)
-                continue
 
-            #train
-            # for _ in range(self.n_iter_solve_cube):
-            #     self.match_handler.solve_one_cube(max_mcts_steps, mcts_eps, final_choose_eps, self.n_shuffle)
-            for _ in range(self.n_iter_train):
+    def train(self, max_mcts_steps, mcts_eps, final_choose_eps):
+        for i in range(10000000):
+            self.check_if_increase_n_shuffle(i)
+            self.attempt_random_cube(max_mcts_steps, mcts_eps, final_choose_eps)
+            for _ in range(self.n_train_per_solve):
                 self.optimize_model()
+            
+
+    def check_if_increase_n_shuffle(self, i):
+        if len(self.deque_latest_results) >= self.n_eval:
+            solve_rate = self.n_latest_wins/self.n_eval
+            if i % 100==0:
+                print(i, "solve_rate", solve_rate)
+            if solve_rate > self.min_solve_rate:
+                self.n_shuffle+=1
+                self.create_results_tracker()
+                self.save_model_and_reset_grapher()
+                print("solve rate reached", solve_rate)
+                print("saving model and increasing nshuffle to", self.n_shuffle)
 
 
+    def attempt_random_cube(self, max_mcts_steps, mcts_eps, final_choose_eps):
+        #solve cube
+        self.agent.mcts.reset(self.n_shuffle)
+        for _ in range(self.n_shuffle*2):
+            a, terminate = self.agent.mcts.monte_carlo_tree_search(max_mcts_steps, mcts_eps, final_choose_eps)
+            if terminate:
+                break
+        self.traverse_and_add_to_replay()
 
-    def evaluate_agent(self, max_mcts_steps, mcts_eps, final_choose_eps, n_eval):
-        '''Evaluates the agent (n_eval) times where the agent is allowed max (n_shuffle*2) turns on cube shuffled (n_shuffle) times'''
-        n_times_solved = 0
-        for _ in range(n_eval):
-            self.match_handler.agent.mcts.reset(self.n_shuffle)
-            for _ in range(self.n_shuffle*2):
-                a, terminate = self.match_handler.agent.mcts.monte_carlo_tree_search(max_mcts_steps, mcts_eps, final_choose_eps)
-                if terminate:
-                    n_times_solved+=1
-                    break
-            self.match_handler.traverse_and_add_to_replay()
-        return n_times_solved/n_eval
+        #update eval statistics
+        if len(self.deque_latest_results) == self.n_eval:
+            first = self.deque_latest_results.popleft()
+            if first == True:
+                self.n_latest_wins -= 1
+            else:
+                self.n_latest_losses -= 1
+        
+        self.deque_latest_results.append(terminate)
+        if terminate == True:
+            self.n_latest_wins += 1
+        else:
+            self.n_latest_losses += 1
 
+
+    def traverse_and_add_to_replay(self):
+        node = self.agent.mcts.root.parent
+        while node.parent != None:
+            node = node.parent
+            self.agent.add_to_experience_replay(node)
+        self.agent.add_to_experience_replay(node)
 
 
 def create_agent(replay_maxlen):
@@ -214,28 +182,35 @@ def create_agent(replay_maxlen):
     agent_network.load_state_dict(torch.load(model_path))
     agent_network.eval()
     agent_mcts = MCTS(agent_network)
-    agent = Player(agent_mcts, ExperienceReplay(replay_maxlen))
+    if os.path.exists(experience_path):
+        with open(experience_path, "rb") as f:
+            exp_replay = pickle.load(f)
+    else:
+        exp_replay = ExperienceReplay(replay_maxlen)
+    agent = Player(agent_mcts, exp_replay)
     return agent
 
 
-
 def main():
-    #variables
-    max_mcts_steps=100
+    #mcts variables
+    max_mcts_steps=50
     mcts_eps=0.05
     final_choose_eps=0
-    replay_maxlen = 1000000
+
+    #train variables
+    replay_maxlen = 100000
     batch_size = 8092
-    n_iter_train = 1000
-    learning_rate = 0.01
-    n_eval = 100
+    learning_rate = 0.1
+    n_train_per_solve = 10
+    n_eval = 200
+    min_solve_rate = 0.9
+    n_shuffle = 3
     
     #optimizer handler
-    match_handler = MatchHandler(create_agent(replay_maxlen))
-    optimizer_handler = OptimizerHandler(match_handler, batch_size, n_iter_train, learning_rate)
+    optimizer_handler = OptimizerHandler(create_agent(replay_maxlen), batch_size, learning_rate, n_train_per_solve, n_eval, min_solve_rate, n_shuffle)
 
     #train on some cubes
-    optimizer_handler.train(max_mcts_steps, mcts_eps, final_choose_eps, n_eval)
+    optimizer_handler.train(max_mcts_steps, mcts_eps, final_choose_eps)
 
 
 if __name__ == "__main__":

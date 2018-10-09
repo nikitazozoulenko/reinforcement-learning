@@ -14,7 +14,7 @@ def step(s, a):
     s_prime = s.copy().take_action(a)
     terminate = s_prime.check_if_solved()
     if terminate:
-        r = 1
+        r = 22
     else:
         r = -1
     return s_prime, r, terminate
