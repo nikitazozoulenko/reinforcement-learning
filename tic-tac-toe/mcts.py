@@ -3,20 +3,15 @@ import torch
 import torch.nn.functional as F
 import torch.optim as optim
 
-from network import FCC
 from environment import GameBoard, step
 
 
 device = torch.device("cuda")
 
-def board_to_tensor(s):
-    tensor = torch.from_numpy(s.board)
-    return tensor.to(device).view(1, -1)
-
-
 def eps_greedy(action_values, eps):
-    '''Returns sorted list of actions chosen eps-greedily'''
-    if eps == 0 or np.random.rand() > eps:
+    '''Takes in a tensor of size [n_actions] and float eps. 
+       Returns sorted list of actions chosen eps-greedily'''
+    if np.random.rand() > eps:
         _q, a = torch.sort(action_values, descending=True)
     else:
         a = torch.randperm(action_values.size(-1))
@@ -28,122 +23,164 @@ class MCTS:
         self.network = network
         self.win_length = win_length
         self.board_size = board_size
-        self.root = Node(network=self.network, s=GameBoard(board_size, win_length), parent=None, prev_a=None, depth=0, is_terminate_state=False)
+        self.reset()
 
 
-    def monte_carlo_tree_search(self, max_steps=100, mcts_eps=0.1, final_choose_eps=0.1):
+    def monte_carlo_tree_search(self, mcts_steps=100, eps=0.05):
+        '''Does mcts_steps MCTS simulations eps-greedily.
+        Returns best (most taken) action'''
         t=0
-        while t<max_steps:
-            self.root.uct_traverse(mcts_eps)
+        while t<mcts_steps:
+            self.root.single_simulation(eps)
             t += 1
-        a = self.get_best_action(final_choose_eps)
+        a = self.get_best_action()
+        return a
+
+
+    def get_best_action(self):
+        '''Returns most taken action if deterministic play, else selects action proportional to n(s, a)'''
+        if self.deterministic_play:
+            a = torch.argmax(self.root.children_n_visited)
+        else:
+            probs = self.root.children_n_visited
+            probs = (probs/torch.sum(probs)).cpu().numpy()
+            a = np.random.choice(probs.shape[-1], size=1, p=probs)[0]
         return a
 
     
-    def get_experience_replay_item(self):
-        return self.root.tree_Q, self.root.s
+    def set_deterministic_play(self, deterministic_play):
+        '''Takes in (bool) deterministic_play'''
+        self.deterministic_play = deterministic_play
 
     
     def change_root_with_action(self, a):
+        '''Replaces root with the node which you would get by taking action a'''
         if self.root.children[a] == None:
-            self.root.simulate(a)
-        self.root = self.root.children[a]
-
-
-    def get_best_action(self, eps):
-        a = self.root.best_action(eps)
-        return a
-
-
-    def reset(self):
-        self.root = Node(network=self.network, s=GameBoard(self.board_size, self.win_length), parent=None, prev_a=None, depth=0, is_terminate_state=False)
-
+            next_root = self.root.expansion(a)
+        else:
+            next_root = self.root.children[a]
+        next_root.parent = None
+        self.root.next_root = next_root
+        self.root = next_root
     
-    def get_original_root(self):
-        node = self.root
-        while node.parent != None:
-            node = node.parent
-        return node
+    
+    def reset(self):
+        '''Resets the MCTS tree to only root of starting game board'''
+        self.root = Node(network=self.network, s=GameBoard(self.board_size, self.win_length), parent=None, prev_a=None, prev_r=None, terminate=False)
+        self.original_root = self.root
+        self.set_deterministic_play(False)
+    
+
+    def traverse_and_add_to_replay(self, experience_replay, gt_v, is_agents_turn=None, current=None):
+        '''Recursively traverses the tree from original root and adds to experience replay'''
+        #agents turns only
+        if current == None:
+            current = self.original_root
+            is_agents_turn = torch.sum(self.original_root.children_n_visited) != 0
         
+        if is_agents_turn:
+            #NOTE: nope-assume that we always use non-deterministical target policies
+            #NOTE: using temp 0.1 ish
+            gt_probs = current.children_n_visited**3
+            gt_probs = gt_probs/torch.sum(gt_probs)
+            experience_replay.add([gt_probs, gt_v, current.s.to_tensor()[0]])
+
+        if current.next_root != None:
+            if current.next_root.next_root != None:
+                is_agents_turn = not is_agents_turn
+                self.traverse_and_add_to_replay(experience_replay, -gt_v, is_agents_turn, current.next_root)
+        
+        
+def get_symmetry_results(network, s):
+    board_array = s.board_array
+    #TODO TODO
+    probs, v = None, None
 
 class Node:
-    def __init__(self, network, s, parent, prev_a, depth, is_terminate_state):
+    def __init__(self, network, s, parent, prev_a, prev_r, terminate):
+        self.next_root = None
         self.network = network
         self.s = s
         self.parent = parent
         self.prev_a = prev_a
-        self.depth = depth
-        self.is_terminate_state = is_terminate_state
+        self.prev_r = prev_r
+        self.terminate = terminate
+        self.children = [None] * self.s.size**2
+        self.children_n_visited = torch.zeros(self.s.size**2).to(device)
 
-        self.allowed_actions = torch.from_numpy(self.s.get_allowed_actions())
-        self.tree_Q = self.network(board_to_tensor(s))[0]
-        self.children = [None] * self.tree_Q.size(-1)
+        self.probs, self.v = self.network(self.s.to_tensor())
+        self.probs = self.probs[0].data
+        self.v = self.v[0].data
+        self.Q = torch.zeros(self.probs.size()).to(device)
 
-        self.n_visited = 1
-    
 
-    def uct_traverse(self, eps=0.1):
-        '''Recursively returns new simulated node picked with eps-greedy UCT'''
-        #check if terminate and enumerate
-        self.n_visited += 1
-        if self.is_terminate_state:
+    def single_simulation(self, eps):
+        '''Add a single MCTS simulation to the tree'''
+        expanded_node = self.selection_and_expansion(eps)
+        v = expanded_node.evaluation()
+        expanded_node.backup(v)
+
+
+    def selection_and_expansion(self, eps):
+        '''Traverses the tree based on UCT (eps greedily)
+           Returns expanded node'''
+        if self.terminate:
             return self
 
-        #Get best legal action
-        a = self.best_action(eps)
+        total_n = torch.sum(self.children_n_visited)
+        if total_n == 0:
+            total_n+=1
 
-        #recursively returns the new simulated node.
-        if self.children[a] == None:
-            return self.simulate(a)
-        else:
-            return self.children[a].uct_traverse()
-
-
-    def best_action(self, eps):
-        '''Returns the best action to pick. Also checks that the move is legal'''
-        #Get statistics for UCT formula
-        children_n_visited = np.ones((self.tree_Q.size(-1)))
-        for i, child in enumerate(self.children):
-            if child != None:
-                children_n_visited[i] = child.n_visited
-        U = np.sqrt(2*np.log(self.n_visited)/children_n_visited).astype(np.float32)
-        sorted_actions = eps_greedy(self.tree_Q + torch.from_numpy(U).to(device), eps)
-        # sorted_actions = eps_greedy(self.tree_Q, eps)
+        #recursively search for best leaf node
+        c = np.sqrt(2)
+        U = self.probs*torch.sqrt(total_n)/(self.children_n_visited+1)*c
+        sorted_actions = eps_greedy(self.Q + U, eps)
         for a in sorted_actions:
             if self.s.check_if_legal_action(a):
-                return a
+                if self.children[a] != None:
+                    return self.children[a].selection_and_expansion(eps)
+                else:
+                    return self.expansion(a)
         
         #the program should never get to this line
+        print(self.s)
         raise RuntimeError("NO ACTIONS WERE LEGAL")
 
-    
-    def simulate(self, a):
+
+    def expansion(self, a):
+        '''Expands tree from current leaf node with action a.
+           Returns expanded node'''
         s_prime, r, terminate = step(self.s, a)
-        self.children[a] = Node(s=s_prime.reverse_player_positions(), network=self.network, parent=self, prev_a=a, depth=self.depth+1, is_terminate_state=terminate)
-        if terminate:
-            estimated_return = torch.tensor(r).float().to(device)
-            self.children[a].tree_Q.zero_()
-        else:
-            estimated_return = r-torch.max(self.children[a].tree_Q.data[self.children[a].allowed_actions])
-        self.tree_Q[a] = estimated_return
-        self.backpropagate()
-        
+        self.children[a] = Node(self.network, s=s_prime.reverse_player_positions(), parent=self, prev_a=a, prev_r=r, terminate=terminate)
+        return self.children[a]
 
-    def backpropagate(self):
+
+    def evaluation(self):
+        '''Evaluates current state (some is already done in __init__)
+           Returns evaluated state value'''
+        if self.terminate:
+            self.v = -self.prev_r
+        return self.v
+
+
+    def backup(self, v):
+        '''Backs up tree statistics up to root
+           Currently uses mean Q'''
         if self.parent != None:
-            old_q_value = self.parent.tree_Q[self.prev_a]
-            new_q_value = -torch.max(self.tree_Q[self.allowed_actions])
-            if old_q_value != new_q_value:
-                self.parent.tree_Q[self.prev_a] = new_q_value
-                self.parent.backpropagate()
+            n_a = self.parent.children_n_visited[self.prev_a]
+            self.parent.children_n_visited[self.prev_a] = n_a + 1
+            n = torch.sum(self.parent.children_n_visited) - 1
 
-
-    def iterate_print(self):
-        print(self.depth)
-        for child in self.children:
-            if child != None:
-                child.iterate_print()
+            old_Q = self.parent.Q[self.prev_a]
+            new_Q = (-v+old_Q*n)/(n+1)
+            self.parent.Q[self.prev_a] = new_Q
+            self.parent.backup(-v)
 
 
 if __name__=="__main__":
-    pass
+    from network import CNN
+    network = CNN().to(device)
+    network.eval()
+    mcts = MCTS(3, 3, network)
+    a = mcts.monte_carlo_tree_search(100, 0.05)
+    print(a)

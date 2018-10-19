@@ -4,16 +4,16 @@ from tkinter import Tk, Canvas, Text, BOTH, W, N, E, S, messagebox
 from tkinter.ttk import Frame, Button, Entry, Label, Style
 import numpy as np
 
+from environment import GameBoard
 from train import create_agent_and_opponent
 
 
 default_max_mcts_step = 100
 default_mcts_eps = 0.05
-default_final_choose_eps = 0
 
-def step(mcts, game_board, max_mcts_steps, mcts_eps, final_choose_eps):
+def step(mcts, game_board, max_mcts_steps, mcts_eps):
     if game_board.get_allowed_actions().any() == 1:
-        picked_action = mcts.monte_carlo_tree_search(max_mcts_steps, mcts_eps, final_choose_eps)
+        picked_action = mcts.monte_carlo_tree_search(max_mcts_steps, mcts_eps)
         game_board.take_action(picked_action)
         mcts.change_root_with_action(picked_action)
 
@@ -51,15 +51,14 @@ def create_entry(master, row, col, text, pady=0, padx=0):
 
 
 class Window(Frame):
-    '''User GUI which lets the user interact with a graphical display of 
-       the game world and change the game logic at any time'''
     def __init__(self, root, board_size, win_length):
         super().__init__()
         self.root = root
         self.board_size = board_size
         self.win_length = win_length
-        agent, _, self.game_board = create_agent_and_opponent(board_size, win_length, replay_maxlen=1)
-        self.mcts = agent.mcts
+        self.game_board = GameBoard(board_size, win_length)
+        agent_mcts, _, _ = create_agent_and_opponent(board_size, win_length, replay_maxlen=1)
+        self.mcts = agent_mcts
         self.draw_area = DrawArea(self, self.game_board, self.mcts)
         self.initUI()
         self._rules_callback()
@@ -76,13 +75,11 @@ class Window(Frame):
                      {"text": "Step", "func":self._step_callback}]
         lbl_specs = [{"text": "max MCTS steps"},
                      {"text": "MCTS epsilon (for eps-greedy search exploration)"},
-                     {"text": "final choose epsilon (for picking final action)"},
                      {"text": "Update game rules"},
                      {"text": "Reset game to empty board"},
                      {"text": "Let the agent take a step"}]
         entry_specs = [{"text": default_max_mcts_step},
-                       {"text": default_mcts_eps},
-                       {"text": default_final_choose_eps}]
+                       {"text": default_mcts_eps}]
         self.labels = [create_label(self, row=j, col=4, text=spec["text"]) for j, spec in enumerate(lbl_specs)]
         self.entries = [create_entry(self, row=j, col=3, text=spec["text"]) for j, spec in enumerate(entry_specs)]
         self.buttons = [create_button(self, row=j+len(entry_specs), col=3, text=spec["text"], func=spec["func"]) for j, spec in enumerate(btn_specs)]
@@ -90,7 +87,7 @@ class Window(Frame):
 
     def _step_callback(self):
         '''Callback function for button that steps through the game world'''
-        step(self.mcts, self.game_board, self.max_mcts_steps, self.mcts_eps, self.final_choose_eps)
+        step(self.mcts, self.game_board, self.max_mcts_steps, self.mcts_eps)
         self.draw_area.draw()
     
 
@@ -108,7 +105,7 @@ class Window(Frame):
             entries = [float(entry) for entry in entries]
         except Exception:
             messagebox.showerror(title="Entry Error", message="Entry has to be a valid number")
-        self.max_mcts_steps, self.mcts_eps, self.final_choose_eps = entries
+        self.max_mcts_steps, self.mcts_eps = entries
         self.draw_area.draw()
 
 
@@ -177,8 +174,8 @@ class DrawArea(Canvas):
 
 
 def main():
-    board_size = 7
-    win_length = 4
+    board_size = 8 #make sure that this is the same as the net was trained on
+    win_length = 5
     root = Tk()
     root.geometry("900x513+450+100")
     app = Window(root, board_size, win_length)

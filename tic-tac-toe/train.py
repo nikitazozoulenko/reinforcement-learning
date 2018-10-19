@@ -1,6 +1,7 @@
 import random
 import collections
 import os
+import pickle
 
 import numpy as np
 import torch
@@ -10,11 +11,14 @@ import torch.optim as optim
 
 from network import CNN
 from environment import GameBoard, step
-from mcts import MCTS, eps_greedy, board_to_tensor
-from graph import graph, ewma
+from mcts import MCTS, eps_greedy
+from graphing import Grapher
+
 
 device = torch.device("cuda")
 model_path="save_dir/model.pth"
+experience_path="save_dir/exp_replay.pkl"
+losses_path="save_dir/loss_folder/losses.txt"
 
 class ExperienceReplay:
     def __init__(self, maxlen):
@@ -28,7 +32,7 @@ class ExperienceReplay:
         self.deque.append(sars)
 
     
-    def sample(self, batch_size=64):
+    def sample(self, batch_size):
         if len(self.deque) < batch_size:
             size = len(self.deque)
         else:
@@ -41,246 +45,208 @@ class ExperienceReplay:
         self.deque = collections.deque(maxlen=self.maxlen)
 
 
-class Player:
-    def __init__(self, mcts, experience_replay):
-        self.mcts = mcts
-        self.experience_replay = experience_replay
-    
-
-    def monte_carlo_tree_search(self, max_mcts_steps, mcts_eps, final_choose_eps):
-        return self.mcts.monte_carlo_tree_search(max_mcts_steps, mcts_eps, final_choose_eps)
-
-
-    def change_root_with_action(self, action):
-        self.mcts.change_root_with_action(action)
-    
-    # def add_to_experience_replay(self):
-    #     s = board_to_tensor(self.mcts.root.s)[0]
-    #     tree_Q = self.mcts.root.tree_Q.data
-    #     allowed_actions = self.mcts.root.allowed_actions
-    #     self.experience_replay.add([s, tree_Q, allowed_actions])
-
-
-    def add_to_experience_replay(self, node):
-        s = board_to_tensor(node.s)[0]
-        tree_Q = node.tree_Q.data
-        allowed_actions = node.allowed_actions
-        self.experience_replay.add([s, tree_Q, allowed_actions])
-
-
 class MatchHandler:
-    def __init__(self, agent, opponent, game_board):
-        self.agent = agent
-        self.opponent = opponent
+    def __init__(self, agent_mcts, opponent_mcts, experience_replay, game_board, n_eval):
+        self.agent_mcts = agent_mcts
+        self.opponent_mcts = opponent_mcts
+        self.experience_replay = experience_replay
         self.game_board = game_board
-        self.reset_tally_results()
+        self.n_eval = n_eval
+
+        self.create_results_tracker()
+
+
+    def play_turn(self, player1, player2, mcts_steps, eps):
+        '''Plays a turn. self.game_board gets stepped once, both player mcts trees change roots. 
+           Returns float reward and bool terminate'''
+        a = player1.monte_carlo_tree_search(mcts_steps, eps)
+        r, terminate = self.game_board.step(a)
+        player1.change_root_with_action(a)
+        player2.change_root_with_action(a)
+        return r, terminate
 
     
-    def play_match(self, max_mcts_steps, mcts_eps, final_choose_eps, do_print=False):
-        #randomize player start
+    def play_match(self, mcts_steps, eps):
+        '''Plays a single match, tallies the result, and adds to experience replay'''
         self.game_board.reset()
-        self.agent.mcts.reset()
-        self.opponent.mcts.reset()
-        players = [self.agent, self.opponent]
+        self.agent_mcts.reset()
+        self.opponent_mcts.reset()
+
+        #who starts first?
+        players = [self.opponent_mcts, self.agent_mcts]
         agent_starts = bool(random.randint(0,1))
+        if agent_starts:
+            players.reverse()
+
+        #play match
+        terminate = False
+        while not terminate:
+            r, terminate = self.play_turn(*players, mcts_steps, eps)
+            players.reverse()
+
+        #experience replay
+        self.agent_mcts.traverse_and_add_to_replay(self.experience_replay, torch.FloatTensor([r]).to(device))
+
+        #update eval statistics
+        self.update_eval_statistics(agent_starts, r)
+
+
+    def update_eval_statistics(self, agent_starts, r):
+        '''Takes in (bool) agent_wins, and (float) r (last reward before game terminates), 
+           and updates last self.n_eval game stats'''
+        if len(self.deque_latest_results) == self.n_eval:
+            first = self.deque_latest_results.popleft()
+            if first == 1:
+                self.n_latest_wins -= 1
+            elif first == 0:
+                self.n_latest_draws -= 1
+            else:
+                self.n_latest_losses -= 1
         if not agent_starts:
-            players.reverse()
-        if do_print:
-            if agent_starts:
-                print("AGENT STARTS")
-            else:
-                print("OPPONENT STARTS")
-
-        #turn loop until terminate
-        _ = players[1].monte_carlo_tree_search(max_mcts_steps, mcts_eps, final_choose_eps) #player waiting gets to start thinking first
-        while True:
-            end_match, coords = self.play_turn(players[0], players[1], max_mcts_steps, mcts_eps, final_choose_eps, do_print)
-            if end_match:
-                break
-            players.reverse()
-
-        #evaluate who won and tally results
-        if coords:
-            cross_won = self.game_board.board[coords[0]] > 0
-            if cross_won == agent_starts:
-                self.wins_agent += 1
-            else:
-                self.losses_agent += 1
-        else:
-            self.draws_agent += 1
-
-        #traverse tree backwards and add to experience replay
-        self.traverse_and_add_to_replay()
-
-
-    def traverse_and_add_to_replay(self):
-        node = self.agent.mcts.root
-        while node.parent != None:
-            node = node.parent
-            self.agent.add_to_experience_replay(node)
-        self.agent.add_to_experience_replay(node)
-
-
-    def play_turn(self, player, opponent, max_mcts_steps, mcts_eps, final_choose_eps, do_print):
-        picked_action = player.monte_carlo_tree_search(max_mcts_steps, mcts_eps, final_choose_eps)
-        self.game_board.take_action(picked_action)
-        player.change_root_with_action(picked_action)
-        opponent.change_root_with_action(picked_action)
-        # for person in [player, opponent]:
-        #     if person.experience_replay != None:
-        #         person.add_to_experience_replay()
-        #     person.change_root_with_action(picked_action)
-        terminate, coords = self.game_board.check_win_position()
-
-        if do_print:                
-            print("game board")
-            print(terminate, coords)
-            print(self.game_board)
-            print(player.mcts.root.tree_Q[player.mcts.root.allowed_actions], player.mcts.root.allowed_actions)
-            print()
-        return terminate, coords
-
-
-    def reset_tally_results(self):
-        self.wins_agent = 0
-        self.draws_agent = 0
-        self.losses_agent = 0
+            r = -r
+        self.deque_latest_results.append(r)
+        if r == 0:
+            self.n_latest_draws += 1
+        elif r == 1:
+            self.n_latest_wins += 1
+        elif r == -1:
+            self.n_latest_losses += 1
     
+
+    def create_results_tracker(self):
+        '''Reset tally and deque with last (n_eval) games'''
+        self.n_latest_wins = 0
+        self.n_latest_losses = 0
+        self.n_latest_draws = 0
+        self.deque_latest_results = collections.deque(maxlen=self.n_eval)
+
 
 class OptimizerHandler:
-    def __init__(self, match_handler, batch_size, n_iter_train, learning_rate):
-        self.match_handler=match_handler
+    def __init__(self, match_handler, batch_size, learning_rate, n_train_per_game, min_win_rate):
+        self.match_handler = match_handler
         self.batch_size = batch_size
-        self.n_iter_train = n_iter_train
         self.learning_rate = learning_rate
-        self.reset_optim_after_opponent_update = True
-        self.MSE = nn.MSELoss()
-        self.create_optim()
+        self.n_train_per_game = n_train_per_game
+        self.min_win_rate = min_win_rate
 
-        self.optim_counter = 0
-        self.losses = []
+        self.create_grapher()
+        self.create_optim()
+        self.MSE = nn.MSELoss()
+    
+
+    def create_grapher(self):
+        self.grapher = Grapher(losses_path)
         
 
     def create_optim(self):
-        self.optimizer = optim.SGD(self.match_handler.agent.mcts.network.parameters(), weight_decay=0.001, lr=self.learning_rate, momentum=0.9, nesterov=True)
-        # self.optimizer = optim.Adam(self.match_handler.agent.mcts.network.parameters(), weight_decay=0.001, lr=self.learning_rate)
-
+        self.optimizer = optim.SGD(self.match_handler.agent_mcts.network.parameters(), weight_decay=0.001, lr=self.learning_rate, momentum=0.9)
+        self.eps = torch.FloatTensor([1e-8]).to(device)
+    
 
     def optimize_model(self):
-        model = self.match_handler.agent.mcts.network
-        experience_replay = self.match_handler.agent.experience_replay
+        '''Applies one iteration of SGD on agent network (if batch size is sufficiently large),
+           target is sampled from experience replay'''
+        model = self.match_handler.agent_mcts.network
+        experience_replay = self.match_handler.experience_replay
         model.train()
         if len(experience_replay.deque) > self.batch_size:
-            for _ in range(self.n_iter_train):
-                samples = experience_replay.sample(self.batch_size)
-                s, target, allowed_a = zip(*samples)
-                s = torch.stack(s)
-                target = torch.stack(target)
-                allowed_a = torch.from_numpy(np.stack(allowed_a))
-                self.optimizer.zero_grad()
-                print(model(s))
-                loss = self.MSE(model(s)[allowed_a], target[allowed_a])
-                loss.backward()
-                self.optimizer.step()
+            samples = experience_replay.sample(self.batch_size)
+            gt_probs, gt_v, s = zip(*samples)
+            gt_probs = torch.stack(gt_probs)
+            gt_v = torch.stack(gt_v)
+            s = torch.stack(s)
 
-                self.losses += [(self.optim_counter, loss.data.cpu().numpy())]
-                self.optim_counter += 1
+            self.optimizer.zero_grad()
+            probs, v = model(s)
+            loss = self.MSE(v, gt_v) - torch.mean(gt_probs*torch.log(probs+self.eps))
+            loss.backward()
+            self.optimizer.step()
+
+            self.grapher.write(str(loss.data.cpu().numpy()))
         model.eval()
-
-    
-    def update_opponent_if_needed(self, min_n_games=500, max_n_games=2000):
-        wins = self.match_handler.wins_agent
-        draws = self.match_handler.draws_agent
-        losses = self.match_handler.losses_agent
-        n_games = wins+draws+losses
-        if n_games > min_n_games:
-            if wins/(wins+losses) > 0.60:
-                self.update_opponent()
-            elif n_games > max_n_games:
-                if wins/(wins+losses) > 0.5:
-                    self.update_opponent()
-                # elif wins/(wins+losses) < 0.5:
-                #     self.reset_agent_to_last_save()
-
-
-    def reset_agent_to_last_save(self):
-        agent_network = self.match_handler.agent.mcts.network
-        opponent_network = self.match_handler.opponent.mcts.network
-        opponent_network.load_state_dict(torch.load(model_path))
-        agent_network.load_state_dict(torch.load(model_path))
-        self.match_handler.reset_tally_results()
-        if self.reset_optim_after_opponent_update:
-            self.create_optim()
-            self.match_handler.agent.experience_replay.reset()
     
 
-    def update_opponent(self):
-        agent_network = self.match_handler.agent.mcts.network
-        opponent_network = self.match_handler.opponent.mcts.network
+    def train(self, mcts_steps, eps):
+        '''Training loop, one self-play match and self.n_train_per_game SGD iterations'''
+        for i in range(10000000):
+            self.replace_opponent_if_needed(i)
+            self.match_handler.play_match(mcts_steps, eps)
+            for _ in range(self.n_train_per_game):
+                self.optimize_model()
+    
+
+    def replace_opponent_if_needed(self, i):
+        '''Checks if the current winrate is above a certain threshold.
+           If yes, updates opponent and saves agent'''
+        n_eval = self.match_handler.n_eval
+        n_wins = self.match_handler.n_latest_wins
+        n_losses = self.match_handler.n_latest_losses
+        n_draws = self.match_handler.n_latest_draws
+        if len(self.match_handler.deque_latest_results) >= n_eval:
+            win_rate = n_wins/(n_wins+n_losses)
+            if i % 10==0:
+                print("iter", i, "win_rate:", win_rate, "wins:", n_wins, "losses:", n_losses, "draws:", n_draws)
+            if win_rate > self.min_win_rate:
+                self.save_model_and_update_opponent()
+                self.match_handler.create_results_tracker()
+                print("\nwin rate reached", win_rate, "saving model\n")
+    
+
+    def save_model_and_update_opponent(self):
+        '''Saves agent network to file and loads it into opponent'''
+        agent_network = self.match_handler.agent_mcts.network
+        opponent_network = self.match_handler.opponent_mcts.network
         torch.save(agent_network.state_dict(), model_path)
         opponent_network.load_state_dict(torch.load(model_path))
-        self.match_handler.reset_tally_results()
-        if self.reset_optim_after_opponent_update:
-            self.create_optim()
-            self.match_handler.agent.experience_replay.reset()
 
 
 def create_agent_and_opponent(board_size, win_length, replay_maxlen):
+    #network and exp replay
     if not os.path.exists(model_path):
         torch.save(CNN(board_size).to(device).state_dict(), model_path)
-
-    #opponent
-    opponent_network = CNN(board_size).to(device)
-    opponent_network.load_state_dict(torch.load(model_path))
-    opponent_network.eval()
-    opponent_mcts = MCTS(board_size, win_length, opponent_network)
-    opponent = Player(opponent_mcts, None)
+    if os.path.exists(experience_path):
+        with open(experience_path, "rb") as f:
+            exp_replay = pickle.load(f)
+    else:
+        exp_replay = ExperienceReplay(replay_maxlen)
 
     #agent
     agent_network = CNN(board_size).to(device)
     agent_network.load_state_dict(torch.load(model_path))
     agent_network.eval()
     agent_mcts = MCTS(board_size, win_length, agent_network)
-    agent = Player(agent_mcts, ExperienceReplay(replay_maxlen))
-    return agent, opponent, GameBoard(board_size, win_length)
+
+    #opponent
+    opponent_network = CNN(board_size).to(device)
+    opponent_network.load_state_dict(torch.load(model_path))
+    opponent_network.eval()
+    opponent_mcts = MCTS(board_size, win_length, opponent_network)
+
+    return agent_mcts, opponent_mcts, exp_replay
 
 
 def main():
-    #variables
-    board_size = 7
+    #game variables
+    board_size = 8
     win_length = 5
-    max_mcts_steps=10
-    mcts_eps=0.05
-    final_choose_eps=0.05
-    replay_maxlen = 100000
-    batch_size = 512
-    n_iter_train = 5
-    learning_rate = 0.01
-    min_n_games=300
-    max_n_games=500
-    
-    #match handler
-    match_handler = MatchHandler(*create_agent_and_opponent(board_size, win_length, replay_maxlen))
-    optimizer_handler = OptimizerHandler(match_handler, batch_size, n_iter_train, learning_rate)
 
-    #play some games
-    for i in range(100000):
-        match_handler.play_match(max_mcts_steps, mcts_eps, final_choose_eps)
-        optimizer_handler.optimize_model()
-        print()
-        print("wins", match_handler.wins_agent)
-        print("draws", match_handler.draws_agent)
-        print("losses", match_handler.losses_agent)
-        if optimizer_handler.losses:
-            print("LOSS", optimizer_handler.losses[-1])
-        optimizer_handler.update_opponent_if_needed(min_n_games, max_n_games)
+    #mcts variables
+    mcts_steps=300
+    eps=0.05
 
-        # if not i % 2000 and i:
-        #     graph(ewma(np.array(optimizer_handler.losses)[:, -1], alpha=0))
+    #train variables
+    replay_maxlen = 10000
+    batch_size = 1024
+    learning_rate = 0.001
+    n_train_per_game = 5
+    n_eval = 500
+    min_win_rate = 0.55
 
+    #training things
+    match_handler = MatchHandler(*create_agent_and_opponent(board_size, win_length, replay_maxlen), GameBoard(board_size, win_length), n_eval)
+    optimizer_handler = OptimizerHandler(match_handler, batch_size, learning_rate, n_train_per_game, min_win_rate)
+    optimizer_handler.train(mcts_steps, eps)
 
 
 if __name__ == "__main__":
     main()
-
-

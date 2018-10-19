@@ -1,6 +1,9 @@
 import copy
 import numpy as np
+import torch
 
+
+device = torch.device("cuda")
 
 def step(s, a):
     s_prime = s.copy().take_action(a)
@@ -23,7 +26,19 @@ class GameBoard:
         self.turn_value_dict = {"X":1, "O":-1}
         self.turn = "X"
 
-                
+
+    def to_tensor(self):
+        '''Returns tensor representation of game board state'''
+        tensor = torch.from_numpy(self.board)
+        return tensor.to(device).view(1, -1)
+    
+
+    def step(self, a):
+        s_prime, r, terminate = step(self, a)
+        self.take_action(a)
+        return r, terminate
+
+
     def take_action(self, a):
         '''Takes action index number a'''
         self.board[a//self.size, a%self.size] = self.turn_value_dict[self.turn]
